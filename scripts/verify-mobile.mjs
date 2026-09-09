@@ -115,19 +115,35 @@ try {
   // Walk past the first-run name picker. The tab bar and most controls are
   // deliberately hidden there, so asserting layout on that screen would be
   // testing the wrong state. Pick a name (or seed one) and assert on the app.
-  const entered = await send('Runtime.evaluate', {
-    expression: `(() => {
-      const b = document.querySelector('#nameList [data-name]');
-      if (b) { b.click(); return 'picked:' + b.dataset.name; }
-      const nameScreen = document.getElementById('scr-name');
-      if (nameScreen && nameScreen.classList.contains('active')) return 'no-names-available';
-      return 'already-in';
-    })()`,
-    returnByValue: true
-  }, S);
-  console.log(`  (entry: ${entered.result.value})
+  // Apps Script cold-starts, so the user list can take well over 9s to arrive.
+  // Poll for it rather than sampling once and drawing a conclusion.
+  let entry = 'unknown';
+  for (let i = 0; i < 14; i++) {
+    const probeRes = await send('Runtime.evaluate', {
+      expression: `(() => {
+        const nameScreen = document.getElementById('scr-name');
+        if (!nameScreen || !nameScreen.classList.contains('active')) return 'already-in';
+        return document.querySelector('#nameList [data-name]') ? 'names-ready' : 'waiting';
+      })()`,
+      returnByValue: true
+    }, S);
+    entry = probeRes.result.value;
+    if (entry !== 'waiting') break;
+    await sleep(2000);
+  }
+  if (entry === 'names-ready') {
+    const picked = await send('Runtime.evaluate', {
+      expression: `(() => {
+        const b = document.querySelector('#nameList [data-name]');
+        if (b) { b.click(); return b.dataset.name; } return null;
+      })()`,
+      returnByValue: true
+    }, S);
+    entry = 'picked:' + picked.result.value;
+  }
+  console.log(`  (entry: ${entry})
 `);
-  await sleep(3000);
+  await sleep(3500);
 
   /* ---------- console + network errors ---------- */
   const consoleErrors = events

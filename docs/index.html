@@ -533,6 +533,7 @@ const ui = {
   itemSearch: '',
   rcvSku: null, issSku: null,
   pickerTarget: null,
+  usersLoaded: false,      // distinguishes "no names" from "not loaded yet"
   sheetStack: []
 };
 
@@ -694,10 +695,16 @@ async function render() {
 function renderNames() {
   const list = $('nameList');
   const names = SY.state.users;
+  if (!names.length && !ui.usersLoaded) {
+    // Still loading. Saying "no names" here would be a lie the user acts on.
+    list.innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel"></div>'
+      + '<p style="text-align:center;font-size:var(--fs-sm);color:var(--muted)">Loading names…</p>';
+    return;
+  }
   if (!names.length) {
     list.innerHTML = `<div class="empty"><span class="g">📋</span>
       <h3>No names in the list yet</h3>
-      <p>Add yours below and it will sync when you're online.</p></div>`;
+      <p>Add yours below — it will sync when you're online.</p></div>`;
     return;
   }
   list.innerHTML = names.map(nm => `
@@ -1724,6 +1731,7 @@ async function init() {
   try {
     msg.textContent = 'Loading saved data…';
     await SY.loadFromCache();
+    if (SY.state.users.length) ui.usersLoaded = true;
     await OB.recoverInFlight();
     paintUser();
 
@@ -1737,7 +1745,9 @@ async function init() {
     try {
       await SY.bootstrap();
       SY.state.online = true;
+      ui.usersLoaded = true;
     } catch (err) {
+      ui.usersLoaded = true;   // done trying; the cache is all we have
       SY.state.online = false;
       if (err instanceof ApiError && err.code === 'NEEDS_AUTH') {
         toast(err.message, 'error');
