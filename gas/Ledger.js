@@ -412,6 +412,40 @@ function addUser_(body) {
   }
 }
 
+/**
+ * Deactivate or reactivate a name. Staff leave; the ledger rows they wrote must
+ * stay, so a user is never deleted — only flagged inactive, which drops them
+ * from the picker while their history keeps its attribution.
+ */
+function setUserActive_(body) {
+  body = body || {};
+  var name = str_(body.name);
+  var active = body.active === undefined ? false : !!body.active;
+  if (!name) return jsonErr_('BAD_REQUEST', 'No name supplied', false);
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_MS)) {
+    return jsonErr_('SERVER_BUSY', 'Server busy, please retry', true);
+  }
+  try {
+    var sh = tab_(T_USERS);
+    var last = sh.getLastRow();
+    if (last < 2) return jsonErr_('BAD_REQUEST', 'No users yet', false);
+    var vals = sh.getRange(2, 1, last - 1, 1).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (str_(vals[i][0]).toUpperCase() === name.toUpperCase()) {
+        sh.getRange(i + 2, 2).setValue(active);
+        return jsonOk_({ name: str_(vals[i][0]), active: active });
+      }
+    }
+    return jsonErr_('BAD_REQUEST', 'No user called "' + name + '"', false);
+  } catch (err) {
+    return jsonErr_('SHEET_ERROR', String(err && err.message || err), true);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * voidTxn — the only way to correct a mistake in an append-only ledger
  * ------------------------------------------------------------------ */

@@ -127,6 +127,7 @@ function route_(action, p, body) {
     case 'submitTxnBatch': return submitTxnBatch_(body);
     case 'upsertItem':     return upsertItem_(body);
     case 'addUser':        return addUser_(body);
+    case 'setUserActive':  return setUserActive_(body);
     case 'voidTxn':        return voidTxn_(body);
 
     /* maintenance */

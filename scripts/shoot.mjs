@@ -92,13 +92,50 @@ try {
   await sleep(7000);
   await shoot('01-name-picker');
 
-  // Pick whoever is first in the list so the rest of the app is reachable.
-  await evalIn(`(() => {
-    const b = document.querySelector('#nameList [data-name]');
-    if (b) { b.click(); return b.dataset.name; }
-    return null;
+  // Seed SAMPLE data into this throwaway browser's own storage — never into the
+  // real Sheet. The app renders from cache first, so this is enough to show the
+  // screens populated, and the live data is left untouched.
+  await evalIn(`(async () => {
+    const SAMPLE_ITEMS = [
+      { sku:'TMT-12MM',  description:'TMT Steel Bar 12mm x 12m', uom:'PCS', active:true, rev:1 },
+      { sku:'PLY-18-BR', description:'Plywood Sheet 18mm Brown', uom:'PCS', active:true, rev:1 },
+      { sku:'AGG-20MM',  description:'Aggregate 20mm',           uom:'MT',  active:true, rev:1 },
+      { sku:'CEM-OPC-50',description:'Cement OPC 50kg bag',      uom:'BAG', active:true, rev:1 },
+      { sku:'SCAF-TUBE', description:'Scaffold Tube 6m',         uom:'PCS', active:true, rev:1 }
+    ];
+    const SAMPLE_BAL = [
+      { sku:'TMT-12MM',   total:350,  damaged:12, lastTxnTs:'2026-09-09T09:02:00.000Z' },
+      { sku:'PLY-18-BR',  total:80,   damaged:18, lastTxnTs:'2026-09-09T08:40:00.000Z' },
+      { sku:'AGG-20MM',   total:1200, damaged:0,  lastTxnTs:'2026-09-08T14:15:00.000Z' },
+      { sku:'CEM-OPC-50', total:640,  damaged:35, lastTxnTs:'2026-09-09T07:20:00.000Z' },
+      { sku:'SCAF-TUBE',  total:210,  damaged:0,  lastTxnTs:'2026-09-07T11:05:00.000Z' }
+    ];
+    const db = await new Promise(res => {
+      const r = indexedDB.open('oy_db', 1);
+      r.onsuccess = () => res(r.result);
+    });
+    const put = (key, value) => new Promise(res => {
+      const t = db.transaction('cache', 'readwrite');
+      t.objectStore('cache').put({ key, value, fetchedTs: new Date().toISOString() });
+      t.oncomplete = res;
+    });
+    await put('items', SAMPLE_ITEMS);
+    await put('balances', SAMPLE_BAL);
+    await put('users', ['Rakesh Kumar','Suresh Nair','Anil Joseph']);
+    await put('meta', { epoch: 99, itemsEpoch: 99, lastSyncTs: new Date().toISOString() });
+    localStorage.setItem('oy_user', 'Rakesh Kumar');
+    localStorage.setItem('oy_recent', JSON.stringify(['TMT-12MM','PLY-18-BR']));
+    return true;
   })()`);
-  await sleep(2500);
+
+  // Offline, so the cached sample data is what renders and the live Sheet is
+  // never contacted. It also puts the offline indicator on screen, which is
+  // worth seeing.
+  await send('Network.enable', {}, S);
+  await send('Network.emulateNetworkConditions',
+    { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 }, S);
+  await send('Page.navigate', { url: URL_UNDER_TEST }, S);
+  await sleep(6000);
   await shoot('02-balance');
 
   for (const [screen, shot] of [['receive','03-receive'], ['issue','04-issue'], ['items','05-items']]) {

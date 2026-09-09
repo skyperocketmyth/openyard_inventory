@@ -188,6 +188,9 @@ try {
       });
     } catch { /* best effort */ }
   }
+  // Deactivate the throwaway user so it never shows up in the real picker.
+  try { await post('setUserActive', { name: USER, active: false }); } catch { /* best effort */ }
+
   const end = await balance().catch(() => null);
   console.log(`\n  cleanup: voided ${cleanup.length} rows; ${SKU} now at ` +
     (end ? `total ${end.total} / damaged ${end.damaged}` : 'unknown'));

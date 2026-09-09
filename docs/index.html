@@ -45,6 +45,10 @@ button{background:none;border:none;cursor:pointer}
   text-transform:uppercase;color:var(--label)}
 .req{color:var(--rsa-red)}
 :focus-visible{outline:3px solid var(--rsa-blue-400);outline-offset:2px}
+/* Author styles beat the browser's own [hidden]{display:none}, so a rule like
+   .boot{display:flex} silently defeats el.hidden and the splash screen never
+   goes away. This one line is what makes every `hidden` in the markup work. */
+[hidden]{display:none!important}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
 /* ---------- header ---------- */

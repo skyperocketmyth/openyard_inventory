@@ -146,7 +146,16 @@ try {
       .filter(e => parseFloat(getComputedStyle(e).fontSize) < 16)
       .map(e => (e.id || e.tagName) + '@' + getComputedStyle(e).fontSize);
     return {
+      // Measure what a user SEES, not what the attribute claims: author CSS
+      // can override [hidden] and leave the element fully painted.
       bootHidden: !!boot && boot.hidden,
+      bootInvisible: !!boot && (boot.offsetParent === null
+        && getComputedStyle(boot).display === 'none'),
+      bootCoversScreen: !!boot && (() => {
+        const r = boot.getBoundingClientRect();
+        return getComputedStyle(boot).display !== 'none'
+          && r.width > innerWidth * 0.8 && r.height > innerHeight * 0.8;
+      })(),
       activeScreen: active ? active.id : null,
       screenCount: document.querySelectorAll('.screen').length,
       scrollWidth: document.documentElement.scrollWidth,
@@ -157,6 +166,11 @@ try {
       tinyFont,
       hasTabbar: !!document.querySelector('.tabbar'),
       tabbarHidden: document.getElementById('tabbar')?.hidden ?? null,
+      tabbarVisible: (() => {
+        const t = document.getElementById('tabbar');
+        return !!t && getComputedStyle(t).display !== 'none'
+          && t.getBoundingClientRect().height > 40;
+      })(),
       title: document.title,
       themeColor: document.querySelector('meta[name=theme-color]')?.content || null,
       manifestHref: document.querySelector('link[rel=manifest]')?.getAttribute('href') || null,
@@ -169,8 +183,12 @@ try {
     { expression: expr, returnByValue: true, awaitPromise: false }, S);
   const r = result.value;
 
-  ok('the app boots (splash screen dismissed)', r.bootHidden === true,
-    `boot.hidden=${r.bootHidden}`);
+  ok('the app boots (splash screen actually gone from the screen)',
+    r.bootInvisible === true,
+    `boot.hidden=${r.bootHidden} computed-display-none=${r.bootInvisible}`);
+  ok('the splash screen is NOT still covering the app',
+    r.bootCoversScreen === false,
+    'the boot overlay is still painted over the whole viewport');
   ok('a screen is rendered', !!r.activeScreen, `activeScreen=${r.activeScreen}`);
   ok('all six screen containers exist', r.screenCount >= 5, `found ${r.screenCount}`);
   ok('NO horizontal scroll at 390px',
@@ -184,6 +202,8 @@ try {
     r.tinyFont.length === 0, r.tinyFont.join(', '));
   ok('there are tappable controls on screen', r.tappableCount > 3,
     `count=${r.tappableCount}`);
+  ok('the bottom tab bar is visible', r.tabbarVisible === true,
+    `tabbarVisible=${r.tabbarVisible}`);
   ok('title is set', r.title === 'Open Yard Inventory', r.title);
   ok('theme colour is RSA blue', r.themeColor === '#002060', String(r.themeColor));
   ok('manifest is linked', r.manifestHref === './manifest.json', String(r.manifestHref));
