@@ -109,6 +109,8 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 .field-input:disabled,.field-input[readonly]{background:var(--disabled-bg);color:var(--muted)}
 .field-error{font-size:var(--fs-sm);color:var(--rsa-red);margin-top:var(--s-2);min-height:20px;
   font-weight:var(--fw-6)}
+/* Reserve the space only when there is a message; an empty one left a dead gap. */
+.field-error:empty{min-height:0;margin-top:0}
 .field-help{font-size:var(--fs-xs);color:var(--muted);margin-top:var(--s-2)}
 
 /* ---------- stepper ---------- */
@@ -135,7 +137,7 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 .chip-dmg{background:var(--rsa-red-tint);color:var(--rsa-red)}
 .chip-neutral{background:var(--bg);color:var(--muted);border:1px solid var(--border)}
 .stockbar{height:10px;border-radius:var(--r-pill);background:var(--good);overflow:hidden;display:flex;
-  margin-top:var(--s-2)}
+  justify-content:flex-end;margin-top:var(--s-2)}
 .stockbar .dmg{background:var(--rsa-red);transition:width .25s ease}
 .stockbar.empty{background:var(--disabled-bg)}
 
@@ -145,10 +147,10 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
   border-radius:var(--r-md);box-shadow:var(--sh-1);margin-bottom:var(--s-2);width:100%;text-align:left}
 .row:active{background:var(--rsa-blue-tint)}
 .row-main{flex:1;min-width:0}
-.row-sku{font-size:var(--fs-md);font-weight:var(--fw-8);white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis}
-.row-desc{font-size:var(--fs-sm);color:var(--muted);white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis}
+.row-sku{display:block;font-size:var(--fs-md);font-weight:var(--fw-8);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.row-desc{display:block;font-size:var(--fs-sm);color:var(--muted);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
 .row-num{text-align:right;flex:0 0 auto}
 .row-num .v{font-size:var(--fs-xl);font-weight:var(--fw-8);font-variant-numeric:tabular-nums;
   line-height:1.1}

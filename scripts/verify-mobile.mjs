@@ -112,6 +112,23 @@ try {
   // Give the module graph, the service worker and the first API call time to run.
   await sleep(9000);
 
+  // Walk past the first-run name picker. The tab bar and most controls are
+  // deliberately hidden there, so asserting layout on that screen would be
+  // testing the wrong state. Pick a name (or seed one) and assert on the app.
+  const entered = await send('Runtime.evaluate', {
+    expression: `(() => {
+      const b = document.querySelector('#nameList [data-name]');
+      if (b) { b.click(); return 'picked:' + b.dataset.name; }
+      const nameScreen = document.getElementById('scr-name');
+      if (nameScreen && nameScreen.classList.contains('active')) return 'no-names-available';
+      return 'already-in';
+    })()`,
+    returnByValue: true
+  }, S);
+  console.log(`  (entry: ${entered.result.value})
+`);
+  await sleep(3000);
+
   /* ---------- console + network errors ---------- */
   const consoleErrors = events
     .filter(e => e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error')
