@@ -1,4 +1,5 @@
 <title>Open Yard Inventory</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#002060">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -51,7 +52,7 @@ button{background:none;border:none;cursor:pointer}
   display:flex;align-items:center;gap:var(--s-2);padding:0 var(--s-3);z-index:var(--z-header)}
 .hdr-title{font-size:var(--fs-md);font-weight:var(--fw-8);letter-spacing:.04em;
   text-transform:uppercase;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pill-sync{height:32px;padding:0 var(--s-3);border-radius:var(--r-pill);font-size:var(--fs-xs);
+.pill-sync{min-height:44px;padding:0 var(--s-3);border-radius:var(--r-pill);font-size:var(--fs-xs);
   font-weight:var(--fw-8);display:flex;align-items:center;gap:6px;white-space:nowrap;
   background:rgba(255,255,255,.16);color:#fff}
 .pill-sync .dot{width:8px;height:8px;border-radius:50%;background:var(--good);flex:0 0 auto}
@@ -61,7 +62,7 @@ button{background:none;border:none;cursor:pointer}
 .pill-sync.is-offline-pending .dot{background:var(--rsa-red)}
 .pill-sync.is-offline .dot{background:var(--label)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-.chip-user{height:36px;padding:0 var(--s-2) 0 2px;border-radius:var(--r-pill);
+.chip-user{min-height:44px;padding:0 var(--s-2) 0 2px;border-radius:var(--r-pill);
   background:rgba(255,255,255,.16);color:#fff;font-size:var(--fs-sm);font-weight:var(--fw-8);
   display:flex;align-items:center;gap:var(--s-2);max-width:120px}
 .avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;
@@ -1436,7 +1437,7 @@ async function openItemForm(existingSku, prefillSku) {
         <input class="field-input" id="ifSku" type="text" autocapitalize="characters"
           autocomplete="off" spellcheck="false" maxlength="24" enterkeyhint="next"
           value="${esc(item?.sku || prefillSku || '')}" ${item ? 'readonly' : ''}>
-        ${item ? '<div class="field-help">SKU code can\\'t be changed — the stock history is keyed to it.</div>' : ''}
+        ${item ? '<div class="field-help">SKU code can’t be changed — the stock history is keyed to it.</div>' : ''}
         <div class="field-error" id="ifSkuErr"></div>
       </div>
       <div class="field">
