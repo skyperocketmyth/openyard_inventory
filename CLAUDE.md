@@ -31,7 +31,7 @@ Google Sheet     Items · Ledger · Users · Meta · Balance_Snapshot · Rejecti
 | Apps Script (bound to that Sheet) | `1fL1478vhQ6XIqE8-xRqRM1kAY0go6B9fJiIEfX-EoiSeiD73KjHCVyG2` |
 | Deployment id (**reuse this — never mint a new one**) | `AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn` |
 | `/exec` URL | see `.exec_url`, and `SCRIPT_URL` in `docs/index.html` |
-| App URL | https://skyperocketmyth.github.io/openyard_invnentory/ |
+| App URL | https://skyperocketmyth.github.io/openyard_inventory/ |
 
 ## The data model
 

@@ -7,7 +7,7 @@ item showing how much of it is damaged.
 **No login.** Works from any network. Works with no signal — entries queue on the
 phone and upload when signal returns.
 
-- **App:** https://skyperocketmyth.github.io/openyard_invnentory/
+- **App:** https://skyperocketmyth.github.io/openyard_inventory/
 - **Data:** a Google Sheet, via a Google Apps Script web app
 
 ## How the numbers work

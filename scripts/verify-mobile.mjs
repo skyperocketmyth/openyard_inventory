@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const URL_UNDER_TEST = process.argv[2]
-  || 'https://skyperocketmyth.github.io/openyard_invnentory/';
+  || 'https://skyperocketmyth.github.io/openyard_inventory/';
 const PORT = 9333;
 const CHROME = process.env.CHROME_PATH
   || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
