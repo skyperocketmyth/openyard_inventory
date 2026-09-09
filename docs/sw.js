@@ -4,7 +4,7 @@
  * BUMP `CACHE` ON EVERY CHANGE to index.html or lib/*.js. Forgetting this is the
  * number one cause of "why is my phone still showing the old version".
  */
-const CACHE = 'oy-inventory-v5';
+const CACHE = 'oy-inventory-v6';
 
 const SHELL = [
   './',
@@ -53,13 +53,33 @@ self.addEventListener('fetch', e => {
   if (url.includes('accounts.google.com')) return;
   if (url.includes('/exec')) return;
 
-  // Navigations: cache-first so the app opens with zero signal.
+  // Navigations: NETWORK-FIRST with a short timeout, falling back to cache.
+  //
+  // This was cache-first, which pinned an install to whatever index.html it had
+  // already stored — a broken build stayed broken on the device even after the
+  // fix was live on the server, and the only escape was a manual hard refresh.
+  // Yard staff will not do that. Network-first means a deploy always lands;
+  // the timeout plus cache fallback means it still opens with no signal at all.
   if (e.request.mode === 'navigate') {
-    e.respondWith(
-      caches.match('./index.html')
-        .then(hit => hit || fetch(e.request))
-        .catch(() => caches.match('./index.html'))
-    );
+    e.respondWith((async () => {
+      const cached = await caches.match('./index.html');
+      try {
+        const fresh = await Promise.race([
+          fetch(e.request),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('slow network')), 3500))
+        ]);
+        if (fresh && fresh.ok) {
+          const c = await caches.open(CACHE);
+          c.put('./index.html', fresh.clone());
+          return fresh;
+        }
+        return cached || fresh;
+      } catch {
+        // Offline, or the network was too slow to wait for. Use what we have.
+        return cached || fetch(e.request);
+      }
+    })());
     return;
   }
 

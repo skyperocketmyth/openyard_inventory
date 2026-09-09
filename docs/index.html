@@ -303,6 +303,7 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
   <div style="font-size:var(--fs-lg);font-weight:var(--fw-8)">OPEN YARD INVENTORY</div>
   <div class="spin"></div>
   <div id="bootMsg" style="font-size:var(--fs-sm);opacity:.8">Starting up…</div>
+  <div style="font-size:var(--fs-xs);opacity:.5">v1.0.1</div>
 </div>
 
 <!-- ===================== HEADER ===================== -->
@@ -520,7 +521,7 @@ import { deltasFor } from './lib/deltas.js';
 
 /* ================= configuration ================= */
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn/exec';
-window.OY_APP_VERSION = '1.0.0';
+window.OY_APP_VERSION = '1.0.1';
 configure(SCRIPT_URL);
 
 const $ = id => document.getElementById(id);
@@ -1739,6 +1740,7 @@ async function init() {
     SY.state.online = navigator.onLine;
 
     // Show the UI from cache immediately — never block the yard on the network.
+    clearTimeout(bootWatchdog);
     $('boot').hidden = true;
     show(prefs.getUser() ? 'balance' : 'name');
 
@@ -1762,12 +1764,24 @@ async function init() {
     if (s.balances.length) await SY.mergeBalances(s.balances);
     await render();
   } catch (err) {
+    clearTimeout(bootWatchdog);
     $('boot').hidden = true;
-    show('balance');
+    show(prefs.getUser() ? 'balance' : 'name');
     toast('Something went wrong starting up. Pull down to retry.', 'error');
     console.error(err);
   }
 }
+
+// Whatever happens, the splash screen must not be where the user ends up.
+// If we are still on it after 12 seconds, force the app open and say why.
+const bootWatchdog = setTimeout(() => {
+  const boot = $('boot');
+  if (boot && !boot.hidden) {
+    boot.hidden = true;
+    show(prefs.getUser() ? 'balance' : 'name');
+    toast('Started up without a connection. Pull down to refresh once you have signal.', 'warn');
+  }
+}, 12000);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
