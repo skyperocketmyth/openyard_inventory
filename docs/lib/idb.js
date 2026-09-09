@@ -111,7 +111,8 @@ const LS = {
 };
 
 export const prefs = {
-  getUser: () => LS.read('oy_user'),
+  // An empty string means "nobody chosen", same as never having chosen.
+  getUser: () => LS.read('oy_user') || null,
   setUser: name => LS.write('oy_user', name),
   getLastEpoch: () => Number(LS.read('oy_last_epoch', '0')) || 0,
   setLastEpoch: n => LS.write('oy_last_epoch', String(n)),

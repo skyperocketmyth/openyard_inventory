@@ -303,7 +303,7 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
   <div style="font-size:var(--fs-lg);font-weight:var(--fw-8)">OPEN YARD INVENTORY</div>
   <div class="spin"></div>
   <div id="bootMsg" style="font-size:var(--fs-sm);opacity:.8">Starting up…</div>
-  <div style="font-size:var(--fs-xs);opacity:.5">v1.0.1</div>
+  <div style="font-size:var(--fs-xs);opacity:.5">v1.0.2</div>
 </div>
 
 <!-- ===================== HEADER ===================== -->
@@ -521,7 +521,7 @@ import { deltasFor } from './lib/deltas.js';
 
 /* ================= configuration ================= */
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn/exec';
-window.OY_APP_VERSION = '1.0.1';
+window.OY_APP_VERSION = '1.0.2';
 configure(SCRIPT_URL);
 
 const $ = id => document.getElementById(id);
@@ -581,7 +581,10 @@ function when(iso) {
 
 /* ================= sheets ================= */
 function openSheet({ title, body, foot, search }) {
-  ui.sheetStack.push({ title, body, foot, search });
+  // Only the FIRST open pushes history. Opening a sheet while one is already
+  // open replaces its contents, so there is nothing extra to pop and no back
+  // step to race against.
+  const wasOpen = $('sheetBackdrop').classList.contains('open');
   $('sheetTitle').textContent = title;
   $('sheetBody').innerHTML = body;
   const f = $('sheetFoot');
@@ -589,11 +592,11 @@ function openSheet({ title, body, foot, search }) {
   const s = $('sheetSearchSlot');
   if (search) { s.innerHTML = search; s.hidden = false; } else { s.hidden = true; s.innerHTML = ''; }
   $('sheetBackdrop').classList.add('open');
-  history.pushState({ sheet: ui.sheetStack.length }, '');
+  if (!wasOpen) history.pushState({ sheet: true }, '');
 }
 
 function closeSheet(fromPop) {
-  ui.sheetStack = [];
+  if (!$('sheetBackdrop').classList.contains('open')) return;
   $('sheetBackdrop').classList.remove('open');
   $('sheetBody').innerHTML = '';
   $('sheetFoot').innerHTML = '';
@@ -780,12 +783,19 @@ $('userChip').onclick = () => {
       </p>`
   });
   $('acChange').onclick = () => {
-    closeSheet();
+    // No closeSheet() first — confirmSheet replaces this sheet's contents.
     confirmSheet({
       title: 'Change name',
       message: `Switch to a different name? Entries still waiting to upload will be sent under <b>${esc(prefs.getUser() || '')}</b>.`,
       confirmLabel: 'Change name',
-      onConfirm: () => show('name')
+      onConfirm: () => {
+        // Clear the stored name too, or a reload silently resumes as the
+        // previous person and their entries get attributed to them.
+        prefs.setUser('');
+        ui.usersLoaded = SY.state.users.length > 0;
+        paintUser();
+        show('name');
+      }
     });
   };
   $('acSync').onclick = async () => { closeSheet(); await doRefresh(); };
@@ -936,7 +946,7 @@ async function openItemDetail(sku) {
   });
   $('dtRcv').onclick = () => { closeSheet(); ui.rcvSku = sku; show('receive'); };
   $('dtIss').onclick = () => { closeSheet(); ui.issSku = sku; show('issue'); };
-  $('dtDmg').onclick = () => { closeSheet(); openDamageSheet(sku); };
+  $('dtDmg').onclick = () => openDamageSheet(sku);
   loadMoves(sku);
 }
 
@@ -1031,7 +1041,7 @@ async function openPicker(target) {
     for (const b of $('pkList').querySelectorAll('[data-pick]')) {
       b.onclick = () => choosePick(b.dataset.pick);
     }
-    if ($('pkAdd')) $('pkAdd').onclick = () => { closeSheet(); openItemForm(null, q.toUpperCase()); };
+    if ($('pkAdd')) $('pkAdd').onclick = () => openItemForm(null, q.toUpperCase());
   };
   $('pkSearch').oninput = paint;
   await paint();
@@ -1373,7 +1383,6 @@ async function openDamageSheet(sku) {
     const qty = readNum('dmgQty');
     if (!qty || qty < 1 || qty > maxGood || !reason) return;
     const detail = reason === 'Other' ? $('dmgOther').value.trim() : '';
-    closeSheet();
     confirmSheet({
       title: 'Mark as damaged?',
       message: `<b>${n(qty)} ${esc(item?.uom || '')}</b> of ${esc(sku)} · ${esc(reason)}.<br><br>
@@ -1634,7 +1643,6 @@ $('failBanner').onclick = async () => {
   for (const b of document.querySelectorAll('[data-discard]')) {
     b.onclick = () => {
       const seq = parseInt(b.dataset.discard, 10);
-      closeSheet();
       confirmSheet({
         title: 'Discard this entry?',
         message: 'This entry will be deleted and never uploaded. This cannot be undone.',

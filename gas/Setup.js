@@ -42,6 +42,27 @@ function ensureTabs_() {
     }
   }
 
+  // Force every column that holds a CODE to plain-text format.
+  // Without this, a SKU like "0.3" is stored as the NUMBER 0.3 — and then
+  // "0.50" silently becomes "0.5", two different codes collapse into one, and
+  // the ledger stops matching the item master. Codes are identifiers, never
+  // quantities, so they must never be coerced.
+  var textCols = [
+    [T_ITEMS, 1],   // sku
+    [T_ITEMS, 4],   // barcode
+    [T_LEDGER, 4],  // sku
+    [T_SNAP, 1],    // sku
+    [T_USERS, 1]    // name
+  ];
+  var formatted = [];
+  for (var c = 0; c < textCols.length; c++) {
+    var sh2 = book.getSheetByName(textCols[c][0]);
+    if (!sh2) continue;
+    var col = textCols[c][1];
+    sh2.getRange(2, col, Math.max(sh2.getMaxRows() - 1, 1), 1).setNumberFormat('@');
+    formatted.push(textCols[c][0] + '!' + col);
+  }
+
   // Meta defaults — only written when absent, so a live epoch is never reset.
   var meta = metaAll_();
   var defaults = {
@@ -64,6 +85,7 @@ function ensureTabs_() {
     created: created,
     alreadyThere: existing,
     headersWritten: headed,
+    textFormatted: formatted,
     metaSeeded: seeded,
     allTabs: book.getSheets().map(function (s) { return s.getName(); })
   };
