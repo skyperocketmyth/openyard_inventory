@@ -188,6 +188,14 @@ try {
       });
     } catch { /* best effort */ }
   }
+  // Deactivate the throwaway ITEM too, or it lingers in the real item list.
+  try {
+    await post('upsertItem', {
+      sku: SKU, description: 'Smoke test item', uom: 'PCS',
+      active: false, recordedBy: USER
+    });
+  } catch { /* best effort */ }
+
   // Deactivate the throwaway user so it never shows up in the real picker.
   try { await post('setUserActive', { name: USER, active: false }); } catch { /* best effort */ }
 

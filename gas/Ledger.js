@@ -25,7 +25,27 @@ var TYPES_ALL = ['OPENING', 'INBOUND', 'OUTBOUND', 'DAMAGE', 'REPAIR',
 function submitTxnBatch_(body) {
   body = body || {};
   var txns = body.txns;
-  if (!txns || !txns.length) {
+
+  // An ABSENT body is a transport failure wearing a validation failure's
+  // clothes. Observed live: a POST committed, the reply was lost, and the retry
+  // arrived with no body at all — so the server said "no transactions", the
+  // client filed a perfectly good entry as permanently rejected, and the yard
+  // silently lost a real movement.
+  //
+  // The server can tell the two apart, so it must: nothing recognisable at all
+  // means the request did not arrive intact -> RETRYABLE. The idempotency key
+  // makes the retry safe even if the original did commit.
+  if (!body || Object.keys(body).length === 0) {
+    return jsonErr_('EMPTY_BODY',
+      'The request did not arrive complete. Your entries are safe and will retry.', true);
+  }
+  if (!txns) {
+    return jsonErr_('EMPTY_BODY',
+      'The request arrived without its entries. It will retry.', true);
+  }
+  if (!txns.length) {
+    // A body that genuinely says "zero transactions" is a client bug, not
+    // transport, so retrying it forever would be pointless.
     return jsonErr_('BAD_REQUEST', 'No transactions supplied', false);
   }
   if (txns.length > MAX_BATCH) {

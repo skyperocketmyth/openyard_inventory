@@ -8,7 +8,13 @@
     "test": "node --test test/deltas.test.mjs test/sync.test.mjs",
     "gate": "node scripts/prepush-gate.mjs",
     "push": "npm run gate && clasp push --force",
-    "deploy": "npm run gate && clasp push --force && clasp create-deployment"
+    "deploy": "npm run gate && clasp push --force && clasp create-deployment",
+    "verify": "node scripts/verify-mobile.mjs && node scripts/verify-flows.mjs",
+    "verify:layout": "node scripts/verify-mobile.mjs",
+    "verify:flows": "node scripts/verify-flows.mjs",
+    "verify:sku": "node scripts/verify-numeric-sku.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "shots": "node scripts/shoot.mjs"
   },
   "devDependencies": {}
 }

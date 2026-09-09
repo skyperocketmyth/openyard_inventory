@@ -65,6 +65,10 @@ async function call(url, init) {
   }
 
   if (body && body.ok === false && body.error) {
+    // EMPTY_BODY means the request did not arrive intact — transport, not data.
+    // Treated as retryable server-side too; asserted here so a future change to
+    // the envelope cannot quietly make a lost entry permanent.
+
     throw new ApiError(body.error.code || 'UNKNOWN',
       body.error.message || 'Something went wrong',
       // Unknown failures default to retryable: a needless retry costs nothing,
