@@ -1,0 +1,17 @@
+[
+  { "label": "opening plain",                  "txn": { "type": "OPENING",     "qty": 250, "damagedQty": 0 },                                  "dTotal": 250,  "dDamaged": 0 },
+  { "label": "opening with damage",            "txn": { "type": "OPENING",     "qty": 250, "damagedQty": 6 },                                  "dTotal": 250,  "dDamaged": 6 },
+  { "label": "inbound clean",                  "txn": { "type": "INBOUND",     "qty": 100, "damagedQty": 0 },                                  "dTotal": 100,  "dDamaged": 0 },
+  { "label": "inbound 100 of which 5 damaged", "txn": { "type": "INBOUND",     "qty": 100, "damagedQty": 5 },                                  "dTotal": 100,  "dDamaged": 5 },
+  { "label": "outbound good",                  "txn": { "type": "OUTBOUND",    "qty": 20,  "condition": "GOOD" },                              "dTotal": -20,  "dDamaged": 0 },
+  { "label": "outbound default is good",       "txn": { "type": "OUTBOUND",    "qty": 20 },                                                    "dTotal": -20,  "dDamaged": 0 },
+  { "label": "outbound damaged hits both",     "txn": { "type": "OUTBOUND",    "qty": 5,   "condition": "DAMAGED" },                           "dTotal": -5,   "dDamaged": -5 },
+  { "label": "damage keeps total",             "txn": { "type": "DAMAGE",      "qty": 12 },                                                    "dTotal": 0,    "dDamaged": 12 },
+  { "label": "repair keeps total",             "txn": { "type": "REPAIR",      "qty": 4 },                                                     "dTotal": 0,    "dDamaged": -4 },
+  { "label": "adjust up",                      "txn": { "type": "ADJUST_UP",   "qty": 7 },                                                     "dTotal": 7,    "dDamaged": 0 },
+  { "label": "adjust down",                    "txn": { "type": "ADJUST_DOWN", "qty": 7 },                                                     "dTotal": -7,   "dDamaged": 0 },
+  { "label": "void of inbound",                "txn": { "type": "VOID",        "qty": 100, "damagedQty": 5, "voidOfType": "INBOUND" },         "dTotal": -100, "dDamaged": -5 },
+  { "label": "void of outbound good",          "txn": { "type": "VOID",        "qty": 20,  "condition": "GOOD", "voidOfType": "OUTBOUND" },    "dTotal": 20,   "dDamaged": 0 },
+  { "label": "void of damage",                 "txn": { "type": "VOID",        "qty": 12,  "voidOfType": "DAMAGE" },                           "dTotal": 0,    "dDamaged": -12 },
+  { "label": "unknown type is inert",          "txn": { "type": "NONSENSE",    "qty": 50 },                                                    "dTotal": 0,    "dDamaged": 0 }
+]

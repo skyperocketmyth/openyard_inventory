@@ -1,0 +1,1762 @@
+<title>Open Yard Inventory</title>
+<meta name="theme-color" content="#002060">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Yard Stock">
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icon-192.png">
+
+<style>
+:root{
+  /* RSA brand core */
+  --rsa-blue:#002060; --rsa-blue-700:#001A4F; --rsa-blue-400:#2A4E93; --rsa-blue-tint:#E7ECF6;
+  --rsa-red:#C8102E;  --rsa-red-700:#9E0C24; --rsa-red-tint:#FDECEF;
+  --good:#84BD00;     --good-ink:#4E7300;    --good-tint:#F1F8DE;
+  --sea:#007680;      --sea-tint:#E1F0F1;
+  --label:#6B6B6B;
+
+  --bg:#F5F7FA; --card:#FFFFFF; --border:#D0D8E8; --border-strong:#A9B7D0;
+  --ink:#16202E; --muted:#5B6472; --disabled-bg:#E8ECF3; --disabled-ink:#98A2B3;
+
+  --sh-1:0 1px 3px rgba(0,32,96,.08);
+  --sh-2:0 2px 10px rgba(0,32,96,.10);
+  --sh-3:0 -4px 20px rgba(0,32,96,.14);
+
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:20px; --s-6:24px; --s-7:32px; --s-8:40px;
+  --r-sm:8px; --r-md:12px; --r-lg:16px; --r-xl:20px; --r-pill:999px;
+
+  --fs-hero:34px; --fs-xl:26px; --fs-lg:20px; --fs-md:17px; --fs-base:16px; --fs-sm:14px; --fs-xs:12px;
+  --fw-6:600; --fw-8:800;
+
+  --tap-min:48px; --tap-lg:56px; --tap-xl:64px;
+  --nav-h:64px; --header-h:56px; --safe-b:env(safe-area-inset-bottom,0px);
+  --z-nav:40; --z-header:30; --z-sheet:100; --z-toast:300; --z-boot:400;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{max-width:100%;overflow-x:hidden;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+  font-size:var(--fs-base);line-height:1.5;-webkit-text-size-adjust:100%}
+/* Every input at 16px or iOS Safari force-zooms the page on focus. */
+input,select,textarea,button{font:inherit;font-size:var(--fs-base);color:inherit}
+button{background:none;border:none;cursor:pointer}
+.num{font-variant-numeric:tabular-nums;font-weight:var(--fw-8)}
+.eyebrow{font-size:var(--fs-xs);font-weight:var(--fw-8);letter-spacing:.08em;
+  text-transform:uppercase;color:var(--label)}
+.req{color:var(--rsa-red)}
+:focus-visible{outline:3px solid var(--rsa-blue-400);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---------- header ---------- */
+.hdr{position:sticky;top:0;height:var(--header-h);background:var(--rsa-blue);color:#fff;
+  display:flex;align-items:center;gap:var(--s-2);padding:0 var(--s-3);z-index:var(--z-header)}
+.hdr-title{font-size:var(--fs-md);font-weight:var(--fw-8);letter-spacing:.04em;
+  text-transform:uppercase;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pill-sync{height:32px;padding:0 var(--s-3);border-radius:var(--r-pill);font-size:var(--fs-xs);
+  font-weight:var(--fw-8);display:flex;align-items:center;gap:6px;white-space:nowrap;
+  background:rgba(255,255,255,.16);color:#fff}
+.pill-sync .dot{width:8px;height:8px;border-radius:50%;background:var(--good);flex:0 0 auto}
+.pill-sync.is-syncing{background:var(--sea-tint);color:var(--sea)}
+.pill-sync.is-syncing .dot{background:var(--sea);animation:pulse 1.2s infinite}
+.pill-sync.is-offline-pending{background:#fff;color:var(--rsa-red)}
+.pill-sync.is-offline-pending .dot{background:var(--rsa-red)}
+.pill-sync.is-offline .dot{background:var(--label)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.chip-user{height:36px;padding:0 var(--s-2) 0 2px;border-radius:var(--r-pill);
+  background:rgba(255,255,255,.16);color:#fff;font-size:var(--fs-sm);font-weight:var(--fw-8);
+  display:flex;align-items:center;gap:var(--s-2);max-width:120px}
+.avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-weight:var(--fw-8);font-size:var(--fs-sm);color:#fff;flex:0 0 auto}
+.chip-user span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- layout ---------- */
+.screen{display:none;padding:var(--s-4);padding-bottom:calc(var(--nav-h) + var(--safe-b) + var(--s-7));
+  max-width:640px;margin:0 auto}
+.screen.active{display:block}
+.banner{border-radius:var(--r-md);padding:var(--s-3);font-size:var(--fs-sm);margin-bottom:var(--s-3);
+  display:flex;gap:var(--s-2);align-items:center}
+.banner-err{background:var(--rsa-red-tint);color:var(--rsa-red);border-left:4px solid var(--rsa-red);
+  font-weight:var(--fw-6);width:100%;text-align:left}
+.banner-info{background:var(--sea-tint);color:var(--sea);border-left:4px solid var(--sea)}
+
+/* ---------- buttons ---------- */
+.btn{width:100%;min-height:var(--tap-lg);padding:0 var(--s-5);border-radius:var(--r-md);
+  background:var(--rsa-blue);color:#fff;font-size:var(--fs-md);font-weight:var(--fw-8);
+  display:flex;align-items:center;justify-content:center;gap:var(--s-2);transition:transform .12s ease}
+.btn:active{background:var(--rsa-blue-700);transform:scale(.985)}
+.btn:disabled{background:var(--disabled-bg);color:var(--disabled-ink);transform:none}
+.btn-ghost{background:transparent;border:2px solid var(--border-strong);color:var(--rsa-blue)}
+.btn-ghost:active{background:var(--rsa-blue-tint)}
+.btn-danger{background:var(--rsa-red)}
+.btn-danger:active{background:var(--rsa-red-700)}
+.btn-row{display:flex;gap:var(--s-2)}
+.spin{width:18px;height:18px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;
+  border-radius:50%;animation:rot .7s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+
+/* ---------- fields ---------- */
+.field{margin-bottom:var(--s-4)}
+.field-label{display:block;margin-bottom:var(--s-2)}
+.field-input{width:100%;height:var(--tap-lg);padding:0 var(--s-4);border:2px solid var(--border-strong);
+  border-radius:var(--r-md);background:var(--card);-webkit-appearance:none}
+textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var(--s-4);resize:none}
+.field-input:focus{border-color:var(--rsa-blue);box-shadow:0 0 0 3px var(--rsa-blue-tint);outline:none}
+.field-input.is-invalid{border-color:var(--rsa-red);background:var(--rsa-red-tint)}
+.field-input:disabled,.field-input[readonly]{background:var(--disabled-bg);color:var(--muted)}
+.field-error{font-size:var(--fs-sm);color:var(--rsa-red);margin-top:var(--s-2);min-height:20px;
+  font-weight:var(--fw-6)}
+.field-help{font-size:var(--fs-xs);color:var(--muted);margin-top:var(--s-2)}
+
+/* ---------- stepper ---------- */
+.stepper{display:flex;gap:var(--s-2);height:var(--tap-xl)}
+.stepper button{width:var(--tap-xl);height:var(--tap-xl);border-radius:var(--r-md);
+  background:var(--rsa-blue-tint);color:var(--rsa-blue);font-size:26px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.stepper button:disabled{background:var(--disabled-bg);color:var(--disabled-ink)}
+.stepper input{flex:1;min-width:0;text-align:center;font-size:var(--fs-lg);font-weight:var(--fw-8);
+  border:2px solid var(--border-strong);border-radius:var(--r-md);background:var(--card);
+  font-variant-numeric:tabular-nums;-webkit-appearance:none}
+.stepper input:focus{border-color:var(--rsa-blue);box-shadow:0 0 0 3px var(--rsa-blue-tint);outline:none}
+.stepper input.is-invalid{border-color:var(--rsa-red);background:var(--rsa-red-tint)}
+.chips{display:flex;gap:var(--s-2);margin-top:var(--s-2);flex-wrap:wrap}
+.chip-add{min-height:var(--tap-min);padding:0 var(--s-4);border-radius:var(--r-pill);
+  background:var(--card);border:2px solid var(--border);color:var(--rsa-blue);
+  font-size:var(--fs-sm);font-weight:var(--fw-8);display:flex;align-items:center}
+.chip-add:active{background:var(--rsa-blue-tint)}
+
+/* ---------- chips / bars ---------- */
+.chip{height:32px;padding:0 var(--s-3);border-radius:var(--r-pill);font-size:var(--fs-sm);
+  font-weight:var(--fw-8);display:inline-flex;align-items:center;gap:6px}
+.chip-good{background:var(--good-tint);color:var(--good-ink)}
+.chip-dmg{background:var(--rsa-red-tint);color:var(--rsa-red)}
+.chip-neutral{background:var(--bg);color:var(--muted);border:1px solid var(--border)}
+.stockbar{height:10px;border-radius:var(--r-pill);background:var(--good);overflow:hidden;display:flex;
+  margin-top:var(--s-2)}
+.stockbar .dmg{background:var(--rsa-red);transition:width .25s ease}
+.stockbar.empty{background:var(--disabled-bg)}
+
+/* ---------- rows ---------- */
+.row{display:flex;align-items:center;gap:var(--s-3);min-height:var(--tap-xl);
+  padding:var(--s-3) var(--s-4);background:var(--card);border:1px solid var(--border);
+  border-radius:var(--r-md);box-shadow:var(--sh-1);margin-bottom:var(--s-2);width:100%;text-align:left}
+.row:active{background:var(--rsa-blue-tint)}
+.row-main{flex:1;min-width:0}
+.row-sku{font-size:var(--fs-md);font-weight:var(--fw-8);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.row-desc{font-size:var(--fs-sm);color:var(--muted);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.row-num{text-align:right;flex:0 0 auto}
+.row-num .v{font-size:var(--fs-xl);font-weight:var(--fw-8);font-variant-numeric:tabular-nums;
+  line-height:1.1}
+.chev{color:var(--border-strong);font-size:20px;flex:0 0 auto}
+.bal-row{flex-direction:column;align-items:stretch;gap:var(--s-1)}
+.bal-top{display:flex;align-items:flex-start;gap:var(--s-3)}
+.bal-chips{display:flex;gap:var(--s-2);padding-left:var(--s-4);flex-wrap:wrap}
+.bal-row.has-dmg{border-left:3px solid var(--rsa-red)}
+.bal-row.all-good{border-left:3px solid var(--good)}
+
+/* ---------- cards ---------- */
+.summary{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--rsa-blue);
+  border-radius:var(--r-lg);padding:var(--s-4);box-shadow:var(--sh-1);margin-bottom:var(--s-4)}
+.summary .big{font-size:var(--fs-hero);font-weight:var(--fw-8);font-variant-numeric:tabular-nums;
+  line-height:1.1}
+.summary-chips{display:flex;gap:var(--s-2);margin-top:var(--s-2);flex-wrap:wrap}
+.ctx-strip{background:var(--rsa-blue-tint);border-radius:var(--r-md);padding:var(--s-3);
+  font-size:var(--fs-sm);color:var(--rsa-blue);margin-bottom:var(--s-4);font-weight:var(--fw-6)}
+.avail{background:var(--good-tint);border:1px solid #CDE39A;border-radius:var(--r-lg);
+  padding:var(--s-4);text-align:center;margin-bottom:var(--s-4)}
+.avail.zero{background:var(--rsa-red-tint);border-color:#F3B8C1}
+.avail .v{font-size:var(--fs-hero);font-weight:var(--fw-8);color:var(--good-ink);
+  font-variant-numeric:tabular-nums;line-height:1.1}
+.avail.zero .v{color:var(--rsa-red)}
+.avail .sub{font-size:var(--fs-sm);color:var(--muted);margin-top:var(--s-2)}
+.preview{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:var(--s-3);margin-bottom:var(--s-4);font-size:var(--fs-sm)}
+.preview .line{display:flex;justify-content:space-between;gap:var(--s-2);margin-bottom:var(--s-1)}
+.preview b{font-weight:var(--fw-8)}
+.note-info{background:var(--rsa-blue-tint);border-left:4px solid var(--rsa-blue);
+  border-radius:var(--r-md);padding:var(--s-3);font-size:var(--fs-sm);color:var(--rsa-blue);
+  margin-bottom:var(--s-4)}
+.note-info b{font-weight:var(--fw-8)}
+.equation{display:flex;align-items:flex-end;justify-content:center;gap:var(--s-3);
+  padding:var(--s-4) 0;text-align:center}
+.equation .term{flex:0 1 auto}
+.equation .term .v{font-size:var(--fs-hero);font-weight:var(--fw-8);font-variant-numeric:tabular-nums;
+  line-height:1.05}
+.equation .op{font-size:var(--fs-lg);color:var(--muted);padding-bottom:22px;font-weight:var(--fw-6)}
+
+/* ---------- item select trigger ---------- */
+.item-select{width:100%;min-height:var(--tap-lg);padding:var(--s-3) var(--s-4);
+  border:2px solid var(--border-strong);border-radius:var(--r-md);background:var(--card);
+  display:flex;align-items:center;gap:var(--s-3);text-align:left}
+.item-select.is-invalid{border-color:var(--rsa-red);background:var(--rsa-red-tint)}
+.item-select .placeholder{color:var(--muted)}
+.item-select .chg{color:var(--rsa-blue);font-weight:var(--fw-8);font-size:var(--fs-sm);flex:0 0 auto}
+
+/* ---------- search ---------- */
+.search{position:relative;margin-bottom:var(--s-3)}
+.search input{width:100%;height:var(--tap-lg);padding:0 var(--tap-min) 0 44px;
+  border:2px solid var(--border-strong);border-radius:var(--r-md);background:var(--card);
+  -webkit-appearance:none}
+.search input:focus{border-color:var(--rsa-blue);outline:none}
+.search .ico{position:absolute;left:var(--s-3);top:50%;transform:translateY(-50%);
+  color:var(--muted);pointer-events:none}
+.search .clr{position:absolute;right:4px;top:50%;transform:translateY(-50%);
+  width:44px;height:44px;color:var(--muted);font-size:20px}
+.sorts{display:flex;gap:var(--s-2);overflow-x:auto;padding-bottom:var(--s-2);margin-bottom:var(--s-3);
+  scrollbar-width:none}
+.sorts::-webkit-scrollbar{display:none}
+.chip-filter{min-height:var(--tap-min);padding:0 var(--s-4);border-radius:var(--r-pill);
+  background:var(--card);border:2px solid var(--border);color:var(--muted);
+  font-size:var(--fs-sm);font-weight:var(--fw-8);white-space:nowrap;display:flex;align-items:center}
+.chip-filter[aria-pressed="true"]{background:var(--rsa-blue);border-color:var(--rsa-blue);color:#fff}
+
+/* ---------- tab bar ---------- */
+.tabbar{position:fixed;bottom:0;left:0;right:0;height:calc(var(--nav-h) + var(--safe-b));
+  padding-bottom:var(--safe-b);background:var(--card);border-top:1px solid var(--border);
+  box-shadow:var(--sh-3);display:flex;z-index:var(--z-nav)}
+.tab{flex:1;min-height:var(--nav-h);display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:2px;color:var(--muted);font-size:var(--fs-xs);
+  font-weight:var(--fw-8);letter-spacing:.04em;position:relative;text-transform:uppercase}
+.tab .g{font-size:20px;line-height:1}
+.tab[aria-current="page"]{color:var(--rsa-blue)}
+.tab[aria-current="page"]::before{content:'';position:absolute;top:0;left:12%;right:12%;height:3px;
+  background:var(--rsa-blue);border-radius:0 0 3px 3px}
+
+/* ---------- sheets ---------- */
+.backdrop{position:fixed;inset:0;background:rgba(22,32,46,.5);display:none;align-items:flex-end;
+  z-index:var(--z-sheet)}
+.backdrop.open{display:flex}
+.sheet{background:var(--card);width:100%;border-radius:var(--r-xl) var(--r-xl) 0 0;
+  max-height:92vh;box-shadow:var(--sh-3);display:flex;flex-direction:column;
+  padding-bottom:var(--safe-b);animation:up .2s ease}
+@keyframes up{from{transform:translateY(24px);opacity:.6}to{transform:none;opacity:1}}
+.sheet-hdr{height:var(--header-h);display:flex;align-items:center;gap:var(--s-2);
+  padding:0 var(--s-3);border-bottom:1px solid var(--border);flex:0 0 auto}
+.sheet-hdr h2{flex:1;font-size:var(--fs-md);font-weight:var(--fw-8);text-transform:uppercase;
+  letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sheet-x{width:44px;height:44px;font-size:24px;color:var(--muted);flex:0 0 auto}
+.sheet-body{padding:var(--s-4);overflow-y:auto;-webkit-overflow-scrolling:touch}
+.sheet-foot{padding:var(--s-4);border-top:1px solid var(--border);flex:0 0 auto}
+.picker-search{padding:var(--s-3) var(--s-4) 0;flex:0 0 auto}
+
+/* ---------- misc ---------- */
+.empty{text-align:center;padding:var(--s-8) var(--s-5)}
+.empty .g{font-size:48px;display:block;margin-bottom:var(--s-3)}
+.empty h3{font-size:var(--fs-md);font-weight:var(--fw-8);margin-bottom:var(--s-2)}
+.empty p{font-size:var(--fs-sm);color:var(--muted);margin-bottom:var(--s-4)}
+.skel{background:linear-gradient(90deg,#E9EDF4 25%,#F5F7FA 37%,#E9EDF4 63%);background-size:400% 100%;
+  animation:shim 1.3s infinite;border-radius:var(--r-md);height:var(--tap-xl);margin-bottom:var(--s-2)}
+@keyframes shim{0%{background-position:100% 0}100%{background-position:0 0}}
+.toast{position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(var(--nav-h) + var(--safe-b) + var(--s-4));max-width:calc(100% - var(--s-8));
+  padding:var(--s-3) var(--s-5);border-radius:var(--r-pill);font-size:var(--fs-sm);
+  font-weight:var(--fw-6);color:#fff;z-index:var(--z-toast);box-shadow:var(--sh-2);display:none;
+  text-align:center}
+.toast.show{display:block}
+.toast.success{background:var(--good-ink)}
+.toast.error{background:var(--rsa-red)}
+.toast.info{background:var(--sea)}
+.toast.warn{background:#8A5A00}
+.boot{position:fixed;inset:0;z-index:var(--z-boot);
+  background:linear-gradient(160deg,var(--rsa-blue) 0%,var(--rsa-blue-700) 100%);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--s-4);
+  color:#fff;padding:var(--s-6);text-align:center}
+.wordmark{font-size:var(--fs-hero);font-weight:var(--fw-8);letter-spacing:.14em;line-height:1.1}
+.wordmark .r{color:#fff}
+.wordmark .l{color:#FF6B80}
+.wordmark-sub{font-size:13px;letter-spacing:.18em;opacity:.75;margin-top:6px}
+.boot .spin{width:36px;height:36px;border-width:3px}
+.fab{position:fixed;right:var(--s-4);bottom:calc(var(--nav-h) + var(--safe-b) + var(--s-4));
+  width:var(--tap-lg);height:var(--tap-lg);border-radius:50%;background:var(--rsa-blue);color:#fff;
+  font-size:28px;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 4px 16px rgba(0,32,96,.4);z-index:var(--z-nav)}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-2)}
+.tile{min-height:var(--tap-lg);border:2px solid var(--border-strong);border-radius:var(--r-md);
+  background:var(--card);display:flex;align-items:center;justify-content:center;text-align:center;
+  padding:var(--s-2);font-size:var(--fs-base)}
+.tile[aria-pressed="true"]{border-color:var(--rsa-red);background:var(--rsa-red-tint);
+  color:var(--rsa-red);font-weight:var(--fw-8)}
+.mv{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-3) 0;
+  border-bottom:1px solid var(--border);font-size:var(--fs-sm)}
+.mv:last-child{border-bottom:none}
+.mv .t{flex:1;min-width:0}
+.mv .q{font-weight:var(--fw-8);font-variant-numeric:tabular-nums}
+.mv .when{font-size:var(--fs-xs);color:var(--muted)}
+.mv.IN{color:var(--good-ink)} .mv.OUT{color:var(--rsa-blue)} .mv.DMG{color:var(--rsa-red)}
+.pending-tag{font-size:var(--fs-xs);font-weight:var(--fw-8);color:var(--sea);
+  background:var(--sea-tint);padding:2px 8px;border-radius:var(--r-pill)}
+</style>
+
+<!-- ===================== BOOT ===================== -->
+<div class="boot" id="boot">
+  <div>
+    <div class="wordmark"><span class="r">RSA</span> <span class="l">LOGISTICS</span></div>
+    <div class="wordmark-sub">AN RSA GLOBAL COMPANY</div>
+  </div>
+  <div style="font-size:var(--fs-lg);font-weight:var(--fw-8)">OPEN YARD INVENTORY</div>
+  <div class="spin"></div>
+  <div id="bootMsg" style="font-size:var(--fs-sm);opacity:.8">Starting up…</div>
+</div>
+
+<!-- ===================== HEADER ===================== -->
+<header class="hdr" id="hdr" hidden>
+  <div class="hdr-title" id="hdrTitle">Balance</div>
+  <button class="pill-sync" id="syncPill" aria-label="Sync status">
+    <span class="dot"></span><span id="syncText">Online</span>
+  </button>
+  <button class="chip-user" id="userChip" aria-label="Change user">
+    <span class="avatar" id="userAvatar">?</span><span id="userName">—</span>
+  </button>
+</header>
+
+<!-- ===================== S0a NAME PICKER ===================== -->
+<section class="screen" id="scr-name" style="max-width:520px">
+  <div style="text-align:center;margin:var(--s-6) 0 var(--s-7)">
+    <div class="wordmark" style="font-size:28px">
+      <span style="color:var(--rsa-blue)">RSA</span>
+      <span style="color:var(--rsa-red)">LOGISTICS</span>
+    </div>
+    <div class="wordmark-sub" style="color:var(--label);opacity:1">AN RSA GLOBAL COMPANY</div>
+    <div style="font-size:var(--fs-lg);font-weight:var(--fw-8);margin-top:var(--s-5)">
+      OPEN YARD INVENTORY
+    </div>
+  </div>
+  <div class="eyebrow" style="margin-bottom:var(--s-2)">Who are you?</div>
+  <div id="nameList"></div>
+  <button class="row" id="btnOtherUser"
+    style="border-style:dashed;border-width:2px;box-shadow:none;background:transparent">
+    <span class="avatar" style="background:var(--border-strong)">+</span>
+    <span class="row-main"><span class="row-sku" style="font-weight:var(--fw-6)">Someone else…</span></span>
+  </button>
+  <div id="otherUserForm" hidden style="margin-top:var(--s-3)">
+    <div class="field">
+      <label class="field-label eyebrow" for="newUserName">Your name</label>
+      <input class="field-input" id="newUserName" type="text" autocapitalize="words"
+        autocomplete="off" enterkeyhint="done" maxlength="40">
+      <div class="field-error" id="newUserErr"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" id="btnCancelUser">Cancel</button>
+      <button class="btn" id="btnSaveUser">Save</button>
+    </div>
+  </div>
+  <p style="text-align:center;font-size:var(--fs-xs);color:var(--muted);margin-top:var(--s-6)">
+    No password needed. Your name is saved on this phone.
+  </p>
+</section>
+
+<!-- ===================== S4 BALANCE ===================== -->
+<section class="screen" id="scr-balance">
+  <button class="banner banner-err" id="failBanner" hidden></button>
+  <div class="banner banner-info" id="staleBanner" hidden></div>
+  <div class="search">
+    <span class="ico">🔍</span>
+    <input id="balSearch" type="search" inputmode="search" placeholder="Search SKU or description"
+      autocomplete="off" spellcheck="false" autocapitalize="characters">
+    <button class="clr" id="balClear" aria-label="Clear search">✕</button>
+  </div>
+  <div class="sorts" id="balSorts">
+    <button class="chip-filter" data-sort="sku" aria-pressed="true">SKU A–Z</button>
+    <button class="chip-filter" data-sort="stock" aria-pressed="false">Most stock</button>
+    <button class="chip-filter" data-sort="damaged" aria-pressed="false">Most damaged</button>
+    <button class="chip-filter" data-sort="recent" aria-pressed="false">Recent</button>
+  </div>
+  <div id="balSummary"></div>
+  <div class="eyebrow" id="balCount" style="margin-bottom:var(--s-2)"></div>
+  <div id="balList"></div>
+</section>
+
+<!-- ===================== S2 RECEIVE ===================== -->
+<section class="screen" id="scr-receive">
+  <div class="field">
+    <span class="field-label eyebrow">Item <span class="req">*</span></span>
+    <button class="item-select" id="rcvItem" data-picker="rcv">
+      <span class="row-main"><span class="placeholder">Tap to choose item</span></span>
+    </button>
+    <div class="field-error" id="rcvItemErr"></div>
+  </div>
+  <div class="ctx-strip" id="rcvCtx" hidden></div>
+
+  <div class="field">
+    <label class="field-label eyebrow" for="rcvQty">
+      Quantity received <span class="req">*</span> <span id="rcvUom"></span>
+    </label>
+    <div class="stepper">
+      <button type="button" data-step="rcvQty" data-by="-1" aria-label="Less">−</button>
+      <input id="rcvQty" type="text" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done"
+        placeholder="0" aria-label="Quantity received">
+      <button type="button" data-step="rcvQty" data-by="1" aria-label="More">+</button>
+    </div>
+    <div class="chips">
+      <button class="chip-add" data-step="rcvQty" data-by="1">+1</button>
+      <button class="chip-add" data-step="rcvQty" data-by="5">+5</button>
+      <button class="chip-add" data-step="rcvQty" data-by="10">+10</button>
+      <button class="chip-add" data-step="rcvQty" data-by="25">+25</button>
+    </div>
+    <div class="field-error" id="rcvQtyErr"></div>
+  </div>
+
+  <div class="field">
+    <label class="field-label eyebrow" for="rcvDmg">Damaged in this receipt</label>
+    <div class="stepper">
+      <button type="button" data-step="rcvDmg" data-by="-1" aria-label="Less">−</button>
+      <input id="rcvDmg" type="text" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done"
+        value="0" aria-label="Damaged in this receipt">
+      <button type="button" data-step="rcvDmg" data-by="1" aria-label="More">+</button>
+    </div>
+    <div class="field-help">Leave 0 if nothing arrived damaged.</div>
+    <div class="field-error" id="rcvDmgErr"></div>
+  </div>
+
+  <div class="preview" id="rcvPreview" hidden></div>
+
+  <div class="field">
+    <label class="field-label eyebrow" for="rcvRef">Reference (optional)</label>
+    <input class="field-input" id="rcvRef" type="text" autocomplete="off" maxlength="40"
+      placeholder="GRN / truck no">
+  </div>
+  <div class="field">
+    <label class="field-label eyebrow" for="rcvNote">Note (optional)</label>
+    <textarea class="field-input" id="rcvNote" rows="2" maxlength="120"
+      autocapitalize="sentences"></textarea>
+  </div>
+  <button class="btn" id="rcvSubmit" disabled>Receive</button>
+</section>
+
+<!-- ===================== S3 ISSUE ===================== -->
+<section class="screen" id="scr-issue">
+  <div class="field">
+    <span class="field-label eyebrow">Item <span class="req">*</span></span>
+    <button class="item-select" id="issItem" data-picker="iss">
+      <span class="row-main"><span class="placeholder">Tap to choose item</span></span>
+    </button>
+    <div class="field-error" id="issItemErr"></div>
+  </div>
+  <div class="avail" id="issAvail" hidden></div>
+
+  <div class="field">
+    <label class="field-label eyebrow" for="issQty">
+      Quantity to issue <span class="req">*</span> <span id="issUom"></span>
+    </label>
+    <div class="stepper">
+      <button type="button" data-step="issQty" data-by="-1" aria-label="Less">−</button>
+      <input id="issQty" type="text" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done"
+        placeholder="0" aria-label="Quantity to issue">
+      <button type="button" data-step="issQty" data-by="1" aria-label="More">+</button>
+    </div>
+    <div class="chips" id="issChips">
+      <button class="chip-add" data-step="issQty" data-by="1">+1</button>
+      <button class="chip-add" data-step="issQty" data-by="5">+5</button>
+      <button class="chip-add" data-step="issQty" data-by="10">+10</button>
+      <button class="chip-add" id="issAll">All</button>
+    </div>
+    <div class="field-error" id="issQtyErr"></div>
+  </div>
+
+  <div class="preview" id="issPreview" hidden></div>
+
+  <div class="field">
+    <label class="field-label eyebrow" for="issRef">Reference (optional)</label>
+    <input class="field-input" id="issRef" type="text" autocomplete="off" maxlength="40"
+      placeholder="DO / site">
+  </div>
+  <div class="field">
+    <label class="field-label eyebrow" for="issNote">Note (optional)</label>
+    <textarea class="field-input" id="issNote" rows="2" maxlength="120"
+      autocapitalize="sentences"></textarea>
+  </div>
+  <button class="btn" id="issSubmit" disabled>Issue</button>
+</section>
+
+<!-- ===================== S1 ITEMS ===================== -->
+<section class="screen" id="scr-items">
+  <div class="search">
+    <span class="ico">🔍</span>
+    <input id="itemSearch" type="search" inputmode="search" placeholder="Search SKU or description"
+      autocomplete="off" spellcheck="false" autocapitalize="characters">
+    <button class="clr" id="itemClear" aria-label="Clear search">✕</button>
+  </div>
+  <div class="eyebrow" id="itemCount" style="margin-bottom:var(--s-2)"></div>
+  <div id="itemList"></div>
+  <button class="fab" id="fabAddItem" aria-label="Add item">+</button>
+</section>
+
+<!-- ===================== TAB BAR ===================== -->
+<nav class="tabbar" id="tabbar" hidden>
+  <button class="tab" data-screen="balance" aria-current="page"><span class="g">📊</span>Balance</button>
+  <button class="tab" data-screen="receive"><span class="g">⬇</span>Receive</button>
+  <button class="tab" data-screen="issue"><span class="g">⬆</span>Issue</button>
+  <button class="tab" data-screen="items"><span class="g">☰</span>Items</button>
+</nav>
+
+<!-- ===================== SHEETS ===================== -->
+<div class="backdrop" id="sheetBackdrop">
+  <div class="sheet" id="sheet">
+    <div class="sheet-hdr">
+      <h2 id="sheetTitle"></h2>
+      <button class="sheet-x" id="sheetClose" aria-label="Close">✕</button>
+    </div>
+    <div id="sheetSearchSlot" class="picker-search" hidden></div>
+    <div class="sheet-body" id="sheetBody"></div>
+    <div class="sheet-foot" id="sheetFoot" hidden></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module">
+import { configure, apiPost, ApiError, probe } from './lib/api.js';
+import { prefs, cacheMeta } from './lib/idb.js';
+import * as OB from './lib/outbox.js';
+import * as SY from './lib/sync.js';
+import { deltasFor } from './lib/deltas.js';
+
+/* ================= configuration ================= */
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn/exec';
+window.OY_APP_VERSION = '1.0.0';
+configure(SCRIPT_URL);
+
+const $ = id => document.getElementById(id);
+const AVATAR_COLOURS = ['#002060','#007680','#3C1053','#0A5A8C','#4E7300','#8A5A00'];
+const REASONS = ['Rain / water','Handling damage','Rust / corrosion','Bent / broken','Torn packing','Other'];
+
+const ui = {
+  screen: 'balance',
+  balSearch: '', balSort: prefs.getSort(),
+  itemSearch: '',
+  rcvSku: null, issSku: null,
+  pickerTarget: null,
+  sheetStack: []
+};
+
+/* ================= small helpers ================= */
+const n = v => new Intl.NumberFormat('en-US').format(v);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+function avatarColour(name) {
+  let h = 0;
+  for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) % 997;
+  return AVATAR_COLOURS[h % AVATAR_COLOURS.length];
+}
+
+let toastTimer = null;
+function toast(msg, kind = 'success') {
+  const el = $('toast');
+  el.textContent = msg;
+  el.className = `toast show ${kind}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = 'toast'; }, kind === 'error' ? 4500 : 2600);
+}
+
+function buzz(ms = 40) { try { navigator.vibrate?.(ms); } catch {} }
+
+function stockBar(total, damaged) {
+  if (!total) return '<div class="stockbar empty"></div>';
+  const pct = Math.max(0, Math.min(100, (damaged / total) * 100));
+  return `<div class="stockbar"><div class="dmg" style="width:${pct}%"></div></div>`;
+}
+
+function when(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const t = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  if (sameDay) return `Today ${t}`;
+  const y = new Date(today); y.setDate(y.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return `Yest ${t}`;
+  return `${d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} ${t}`;
+}
+
+/* ================= sheets ================= */
+function openSheet({ title, body, foot, search }) {
+  ui.sheetStack.push({ title, body, foot, search });
+  $('sheetTitle').textContent = title;
+  $('sheetBody').innerHTML = body;
+  const f = $('sheetFoot');
+  if (foot) { f.innerHTML = foot; f.hidden = false; } else { f.hidden = true; f.innerHTML = ''; }
+  const s = $('sheetSearchSlot');
+  if (search) { s.innerHTML = search; s.hidden = false; } else { s.hidden = true; s.innerHTML = ''; }
+  $('sheetBackdrop').classList.add('open');
+  history.pushState({ sheet: ui.sheetStack.length }, '');
+}
+
+function closeSheet(fromPop) {
+  ui.sheetStack = [];
+  $('sheetBackdrop').classList.remove('open');
+  $('sheetBody').innerHTML = '';
+  $('sheetFoot').innerHTML = '';
+  $('sheetSearchSlot').innerHTML = '';
+  if (!fromPop && history.state && history.state.sheet) history.back();
+}
+
+$('sheetClose').onclick = () => closeSheet();
+$('sheetBackdrop').onclick = e => { if (e.target === $('sheetBackdrop')) closeSheet(); };
+window.addEventListener('popstate', () => {
+  if ($('sheetBackdrop').classList.contains('open')) closeSheet(true);
+});
+
+function confirmSheet({ title, message, confirmLabel, danger, onConfirm }) {
+  openSheet({
+    title,
+    body: `<p style="font-size:var(--fs-base);line-height:1.55">${message}</p>`,
+    foot: `<div class="btn-row">
+        <button class="btn btn-ghost" id="cfNo">Cancel</button>
+        <button class="btn ${danger ? 'btn-danger' : ''}" id="cfYes">${esc(confirmLabel)}</button>
+      </div>`
+  });
+  $('cfNo').onclick = () => closeSheet();
+  $('cfYes').onclick = async () => { closeSheet(); await onConfirm(); };
+}
+
+/* ================= sync pill ================= */
+async function renderSync() {
+  const pending = await OB.pendingCount();
+  const failed = await OB.failedCount();
+  const online = SY.state.online;
+  const pill = $('syncPill');
+  const txt = $('syncText');
+
+  pill.className = 'pill-sync';
+  if (!online && pending > 0) {
+    pill.classList.add('is-offline-pending');
+    txt.textContent = `Offline · ${pending} pending`;
+  } else if (!online) {
+    pill.classList.add('is-offline');
+    txt.textContent = 'Offline';
+  } else if (pending > 0) {
+    pill.classList.add('is-syncing');
+    txt.textContent = OB.isFlushing() ? `Syncing ${pending}` : `${pending} pending`;
+  } else {
+    txt.textContent = 'Online';
+  }
+
+  const banner = $('failBanner');
+  if (failed > 0) {
+    banner.hidden = false;
+    banner.innerHTML = `⚠ ${failed} ${failed === 1 ? 'entry' : 'entries'} could not be saved — tap to fix`;
+  } else {
+    banner.hidden = true;
+  }
+
+  const stale = $('staleBanner');
+  if (pending > 0 && SY.state.lastSyncTs) {
+    stale.hidden = false;
+    stale.textContent = `Showing stock as of ${when(SY.state.lastSyncTs)}. ${pending} not uploaded yet.`;
+  } else {
+    stale.hidden = true;
+  }
+}
+
+/* ================= navigation ================= */
+const TITLES = { balance:'Balance', receive:'Receive', issue:'Issue', items:'Items', name:'' };
+
+function show(screen) {
+  ui.screen = screen;
+  for (const el of document.querySelectorAll('.screen')) el.classList.remove('active');
+  $(`scr-${screen}`).classList.add('active');
+  const isName = screen === 'name';
+  $('hdr').hidden = isName;
+  $('tabbar').hidden = isName;
+  $('hdrTitle').textContent = TITLES[screen] || '';
+  for (const t of document.querySelectorAll('.tab')) {
+    if (t.dataset.screen === screen) t.setAttribute('aria-current', 'page');
+    else t.removeAttribute('aria-current');
+  }
+  window.scrollTo(0, 0);
+  render();
+}
+
+for (const t of document.querySelectorAll('.tab')) {
+  t.onclick = () => show(t.dataset.screen);
+}
+
+/* ================= render dispatcher ================= */
+async function render() {
+  await renderSync();
+  if (ui.screen === 'balance') await renderBalance();
+  else if (ui.screen === 'items') renderItems();
+  else if (ui.screen === 'receive') await renderReceive();
+  else if (ui.screen === 'issue') await renderIssue();
+  else if (ui.screen === 'name') renderNames();
+}
+
+/* ================= S0a name picker ================= */
+function renderNames() {
+  const list = $('nameList');
+  const names = SY.state.users;
+  if (!names.length) {
+    list.innerHTML = `<div class="empty"><span class="g">📋</span>
+      <h3>No names in the list yet</h3>
+      <p>Add yours below and it will sync when you're online.</p></div>`;
+    return;
+  }
+  list.innerHTML = names.map(nm => `
+    <button class="row" data-name="${esc(nm)}">
+      <span class="avatar" style="background:${avatarColour(nm)}">${esc(nm[0].toUpperCase())}</span>
+      <span class="row-main"><span class="row-sku" style="font-weight:var(--fw-6)">${esc(nm)}</span></span>
+      <span class="chev">›</span>
+    </button>`).join('');
+  for (const b of list.querySelectorAll('[data-name]')) {
+    b.onclick = () => pickUser(b.dataset.name);
+  }
+}
+
+function pickUser(name) {
+  prefs.setUser(name);
+  paintUser();
+  toast(`Welcome, ${name}.`);
+  show('balance');
+}
+
+function paintUser() {
+  const u = prefs.getUser() || '—';
+  $('userName').textContent = u.split(' ')[0];
+  const av = $('userAvatar');
+  av.textContent = u === '—' ? '?' : u[0].toUpperCase();
+  av.style.background = avatarColour(u);
+}
+
+$('btnOtherUser').onclick = () => {
+  $('otherUserForm').hidden = false;
+  $('newUserName').focus();
+};
+$('btnCancelUser').onclick = () => {
+  $('otherUserForm').hidden = true;
+  $('newUserName').value = '';
+  $('newUserErr').textContent = '';
+};
+$('btnSaveUser').onclick = async () => {
+  const name = $('newUserName').value.trim();
+  const err = $('newUserErr');
+  if (!name) return void (err.textContent = 'Enter your name.');
+  if (name.length < 2) return void (err.textContent = 'Name must be at least 2 characters.');
+  if (SY.state.users.some(u => u.toLowerCase() === name.toLowerCase())) {
+    return void (err.textContent = 'That name is already in the list — tap it above.');
+  }
+  err.textContent = '';
+  SY.state.users = [...SY.state.users, name].sort();
+  try {
+    await apiPost('addUser', { name });
+    pickUser(name);
+  } catch {
+    // Offline: the name works on this phone now and the server learns it later.
+    // Until then the server would reject entries under it, so say so plainly.
+    pickUser(name);
+    toast('Saved on this phone. Connect once to finish adding your name.', 'warn');
+  }
+};
+
+$('userChip').onclick = () => {
+  openSheet({
+    title: 'Account',
+    body: `
+      <button class="row" id="acChange"><span class="row-main">
+        <span class="row-sku" style="font-weight:var(--fw-6)">Change name</span></span>
+        <span class="chev">›</span></button>
+      <button class="row" id="acSync"><span class="row-main">
+        <span class="row-sku" style="font-weight:var(--fw-6)">Sync now</span></span>
+        <span class="chev">›</span></button>
+      <p style="font-size:var(--fs-xs);color:var(--muted);margin-top:var(--s-4);text-align:center">
+        Open Yard Inventory · v${window.OY_APP_VERSION}<br>
+        ${SY.state.lastSyncTs ? 'Last synced ' + when(SY.state.lastSyncTs) : 'Not synced yet'}
+      </p>`
+  });
+  $('acChange').onclick = () => {
+    closeSheet();
+    confirmSheet({
+      title: 'Change name',
+      message: `Switch to a different name? Entries still waiting to upload will be sent under <b>${esc(prefs.getUser() || '')}</b>.`,
+      confirmLabel: 'Change name',
+      onConfirm: () => show('name')
+    });
+  };
+  $('acSync').onclick = async () => { closeSheet(); await doRefresh(); };
+};
+
+/* ================= S4 balance ================= */
+function matches(item, q) {
+  if (!q) return true;
+  const norm = s => String(s || '').toUpperCase().replace(/[-\s._]/g, '');
+  const nq = norm(q);
+  if (norm(item.sku).includes(nq)) return true;
+  const desc = String(item.description || '').toUpperCase();
+  return q.toUpperCase().split(/\s+/).filter(Boolean).every(tok => desc.includes(tok));
+}
+
+async function renderBalance() {
+  const rows = await SY.projected();
+  const q = ui.balSearch.trim();
+
+  const enriched = rows.map(r => {
+    const item = SY.itemBySku(r.sku);
+    return { ...r, description: item?.description || '', uom: item?.uom || '' };
+  }).filter(r => matches(r, q));
+
+  const sorted = [...enriched];
+  if (ui.balSort === 'stock') sorted.sort((a, b) => b.total - a.total);
+  else if (ui.balSort === 'damaged') {
+    sorted.sort((a, b) => (b.damaged - a.damaged) || (a.sku < b.sku ? -1 : 1));
+  } else if (ui.balSort === 'recent') {
+    sorted.sort((a, b) => String(b.lastTxnTs).localeCompare(String(a.lastTxnTs)));
+  }
+
+  const tot = sorted.reduce((s, r) => s + r.total, 0);
+  const dmg = sorted.reduce((s, r) => s + r.damaged, 0);
+  $('balSummary').innerHTML = sorted.length ? `
+    <div class="summary">
+      <div class="eyebrow">${q ? 'Matching total' : 'Yard total'}</div>
+      <div class="big">${n(tot)}</div>
+      <div class="summary-chips">
+        <span class="chip chip-good">✓ ${n(tot - dmg)} good</span>
+        ${dmg > 0
+          ? `<span class="chip chip-dmg">⚠ ${n(dmg)} damaged</span>`
+          : '<span class="chip chip-neutral">⚠ none damaged</span>'}
+      </div>
+      ${stockBar(tot, dmg)}
+    </div>` : '';
+
+  $('balCount').textContent = sorted.length
+    ? (q ? `${sorted.length} of ${rows.length} match “${q}”` : `${sorted.length} items in stock`)
+    : '';
+
+  const list = $('balList');
+  if (!SY.state.items.length) {
+    list.innerHTML = `<div class="empty"><span class="g">📦</span>
+      <h3>No stock yet</h3><p>Add your items, then record what's in the yard.</p>
+      <button class="btn" id="goItems">Go to Items</button></div>`;
+    $('goItems').onclick = () => show('items');
+    return;
+  }
+  if (!sorted.length) {
+    list.innerHTML = q
+      ? `<div class="empty"><span class="g">🔍</span><h3>No item matches “${esc(q)}”</h3>
+         <button class="btn btn-ghost" id="clrS">Clear search</button></div>`
+      : `<div class="empty"><span class="g">📋</span><h3>All items are at zero</h3>
+         <p>Record a receipt to start tracking.</p>
+         <button class="btn" id="goRcv">Receive stock</button></div>`;
+    if ($('clrS')) $('clrS').onclick = () => { ui.balSearch = ''; $('balSearch').value = ''; render(); };
+    if ($('goRcv')) $('goRcv').onclick = () => show('receive');
+    return;
+  }
+
+  list.innerHTML = sorted.map(r => `
+    <button class="row bal-row ${r.damaged > 0 ? 'has-dmg' : 'all-good'}" data-sku="${esc(r.sku)}">
+      <span class="bal-top">
+        <span class="row-main">
+          <span class="row-sku">${esc(r.sku)}</span>
+          <span class="row-desc">${esc(r.description)}</span>
+        </span>
+        <span class="row-num">
+          <span class="v">${n(r.total)}</span>
+          <span class="eyebrow" style="display:block">total</span>
+        </span>
+        <span class="chev">›</span>
+      </span>
+      <span class="bal-chips">
+        <span class="chip chip-good">✓ ${n(r.good)} good</span>
+        ${r.damaged > 0
+          ? `<span class="chip chip-dmg">⚠ ${n(r.damaged)} damaged</span>`
+          : '<span class="chip chip-neutral">⚠ none</span>'}
+        ${r.pending ? `<span class="pending-tag">⟳ ${r.pending} pending</span>` : ''}
+      </span>
+      ${stockBar(r.total, r.damaged)}
+    </button>`).join('');
+
+  for (const b of list.querySelectorAll('[data-sku]')) {
+    b.onclick = () => openItemDetail(b.dataset.sku);
+  }
+}
+
+$('balSearch').oninput = e => { ui.balSearch = e.target.value; renderBalance(); };
+$('balClear').onclick = () => { ui.balSearch = ''; $('balSearch').value = ''; renderBalance(); };
+for (const c of $('balSorts').querySelectorAll('[data-sort]')) {
+  c.onclick = () => {
+    ui.balSort = c.dataset.sort;
+    prefs.setSort(ui.balSort);
+    for (const o of $('balSorts').querySelectorAll('[data-sort]')) {
+      o.setAttribute('aria-pressed', String(o === c));
+    }
+    renderBalance();
+  };
+}
+for (const o of $('balSorts').querySelectorAll('[data-sort]')) {
+  o.setAttribute('aria-pressed', String(o.dataset.sort === ui.balSort));
+}
+
+/* ================= item detail ================= */
+async function openItemDetail(sku) {
+  const item = SY.itemBySku(sku);
+  const b = await SY.projectedFor(sku);
+  openSheet({
+    title: sku,
+    body: `
+      <p style="color:var(--muted);font-size:var(--fs-sm)">
+        ${esc(item?.description || '')}${item?.uom ? ' · ' + esc(item.uom) : ''}
+      </p>
+      <div class="equation">
+        <span class="term"><span class="v">${n(b.total)}</span>
+          <span class="eyebrow" style="display:block">total</span></span>
+        <span class="op">=</span>
+        <span class="term"><span class="v" style="color:var(--good-ink)">${n(b.good)}</span>
+          <span class="eyebrow" style="display:block">good</span></span>
+        <span class="op">+</span>
+        <span class="term"><span class="v" style="color:var(--rsa-red)">${n(b.damaged)}</span>
+          <span class="eyebrow" style="display:block">damaged</span></span>
+      </div>
+      <div style="height:16px;border-radius:var(--r-pill);background:var(--good);overflow:hidden;display:flex">
+        <div style="background:var(--rsa-red);width:${b.total ? (b.damaged / b.total) * 100 : 0}%"></div>
+      </div>
+      <div class="btn-row" style="margin-top:var(--s-5)">
+        <button class="btn btn-ghost" id="dtRcv">⬇ Receive</button>
+        <button class="btn btn-ghost" id="dtIss" ${b.good <= 0 ? 'disabled' : ''}>⬆ Issue</button>
+      </div>
+      <button class="btn btn-danger" id="dtDmg" style="margin-top:var(--s-2)"
+        ${b.good <= 0 ? 'disabled' : ''}>⚠ Record damage on this stock</button>
+      ${b.good <= 0 ? '<div class="field-help">No good stock to mark as damaged.</div>' : ''}
+      <div class="eyebrow" style="margin-top:var(--s-6)">Recent movements</div>
+      <div id="dtMoves"><div class="skel"></div></div>`
+  });
+  $('dtRcv').onclick = () => { closeSheet(); ui.rcvSku = sku; show('receive'); };
+  $('dtIss').onclick = () => { closeSheet(); ui.issSku = sku; show('issue'); };
+  $('dtDmg').onclick = () => { closeSheet(); openDamageSheet(sku); };
+  loadMoves(sku);
+}
+
+async function loadMoves(sku) {
+  const el = $('dtMoves');
+  if (!el) return;
+  const queued = (await OB.pendingItems()).filter(i => i.sku === sku);
+  const localHtml = queued.map(i => `
+    <div class="mv ${i.type === 'INBOUND' ? 'IN' : i.type === 'OUTBOUND' ? 'OUT' : 'DMG'}">
+      <span class="t"><b>${i.type === 'INBOUND' ? 'RECEIVED' : i.type === 'OUTBOUND' ? 'ISSUED' : 'DAMAGED'}</b>
+        <span class="when">${esc(prefs.getUser() || '')} · not uploaded yet</span></span>
+      <span class="q">${n(i.payload.qty)}</span>
+      <span class="pending-tag">⟳</span>
+    </div>`).join('');
+
+  let serverHtml = '';
+  try {
+    const { apiGet } = await import('./lib/api.js');
+    const res = await apiGet('getLedger', { sku, limit: '10' });
+    const rows = (res.data && res.data.rows) || [];
+    serverHtml = rows.length ? rows.map(r => {
+      const cls = r.type === 'INBOUND' ? 'IN' : r.type === 'OUTBOUND' ? 'OUT' : 'DMG';
+      const label = { INBOUND:'RECEIVED', OUTBOUND:'ISSUED', DAMAGE:'DAMAGED',
+        OPENING:'OPENING', VOID:'CANCELLED', REPAIR:'REPAIRED' }[r.type] || r.type;
+      const extra = r.damagedQty > 0 && r.type === 'INBOUND' ? ` (${n(r.damagedQty)} dmg)` : '';
+      return `<div class="mv ${cls}">
+        <span class="t"><b>${label}</b>${extra}
+          <span class="when">${esc(r.recordedBy)} · ${when(r.clientTs || r.serverTs)}</span>
+          ${r.remarks ? `<span class="when">${esc(r.remarks)}</span>` : ''}</span>
+        <span class="q">${n(r.qty)}</span></div>`;
+    }).join('') : '<p style="color:var(--muted);font-size:var(--fs-sm)">No movements recorded yet.</p>';
+  } catch {
+    serverHtml = '<p style="color:var(--muted);font-size:var(--fs-sm)">Movement history needs a connection.</p>';
+  }
+  if ($('dtMoves')) $('dtMoves').innerHTML = localHtml + serverHtml;
+}
+
+/* ================= item picker ================= */
+async function openPicker(target) {
+  ui.pickerTarget = target;
+  const recent = prefs.getRecent();
+  openSheet({
+    title: 'Choose item',
+    search: `<div class="search" style="margin-bottom:var(--s-3)">
+        <span class="ico">🔍</span>
+        <input id="pkSearch" type="search" inputmode="search" autocomplete="off" spellcheck="false"
+          autocapitalize="characters" placeholder="Search SKU or description">
+      </div>`,
+    body: '<div id="pkList"></div>'
+  });
+  const paint = async () => {
+    const q = ($('pkSearch')?.value || '').trim();
+    const bals = await SY.projected();
+    const balOf = sku => bals.find(b => b.sku === sku) || { total:0, damaged:0, good:0 };
+    const all = SY.state.items.filter(i => i.active !== false && matches(i, q));
+
+    const rowHtml = i => {
+      const b = balOf(i.sku);
+      return `<button class="row" data-pick="${esc(i.sku)}">
+        <span class="row-main">
+          <span class="row-sku">${esc(i.sku)}</span>
+          <span class="row-desc">${esc(i.description)}</span>
+        </span>
+        <span class="row-num"><span class="v" style="font-size:var(--fs-md)">${n(b.total)}</span>
+          <span class="eyebrow" style="display:block">${esc(i.uom || '')}</span></span>
+      </button>`;
+    };
+
+    let html = '';
+    if (!q && recent.length) {
+      const rec = recent.map(s => all.find(i => i.sku === s)).filter(Boolean);
+      if (rec.length) {
+        html += '<div class="eyebrow" style="margin-bottom:var(--s-2)">Recent</div>'
+          + rec.map(rowHtml).join('')
+          + `<div class="eyebrow" style="margin:var(--s-4) 0 var(--s-2)">All items · ${all.length}</div>`;
+      }
+    }
+    const shown = all.slice(0, 60);
+    html += shown.map(rowHtml).join('');
+    if (all.length > shown.length) {
+      html += `<p style="color:var(--muted);font-size:var(--fs-sm);text-align:center;padding:var(--s-3)">
+        ${all.length - shown.length} more — keep typing to narrow it down</p>`;
+    }
+    if (!all.length) {
+      html = `<div class="empty"><span class="g">🔍</span>
+        <h3>No item matches “${esc(q)}”</h3>
+        <p>Check the code, or add it as a new item.</p>
+        <button class="btn btn-ghost" id="pkAdd">+ Add “${esc(q.toUpperCase())}” as a new item</button>
+      </div>`;
+    }
+    $('pkList').innerHTML = html;
+    for (const b of $('pkList').querySelectorAll('[data-pick]')) {
+      b.onclick = () => choosePick(b.dataset.pick);
+    }
+    if ($('pkAdd')) $('pkAdd').onclick = () => { closeSheet(); openItemForm(null, q.toUpperCase()); };
+  };
+  $('pkSearch').oninput = paint;
+  await paint();
+}
+
+function choosePick(sku) {
+  prefs.pushRecent(sku);
+  if (ui.pickerTarget === 'rcv') ui.rcvSku = sku;
+  else ui.issSku = sku;
+  closeSheet();
+  render();
+}
+
+for (const el of document.querySelectorAll('[data-picker]')) {
+  el.onclick = () => openPicker(el.dataset.picker);
+}
+
+/* ================= steppers ================= */
+function readNum(id) {
+  const v = ($(id).value || '').replace(/[^\d]/g, '');
+  return v === '' ? null : parseInt(v, 10);
+}
+
+function bumpField(id, by) {
+  const cur = readNum(id) ?? 0;
+  const next = Math.max(0, Math.min(999999, cur + by));
+  $(id).value = String(next);
+  onFormInput();
+}
+
+for (const b of document.querySelectorAll('[data-step]')) {
+  b.onclick = () => bumpField(b.dataset.step, parseInt(b.dataset.by, 10));
+}
+for (const id of ['rcvQty','rcvDmg','issQty']) {
+  $(id).addEventListener('input', e => {
+    const clean = e.target.value.replace(/[^\d]/g, '').slice(0, 6);
+    if (clean !== e.target.value) e.target.value = clean;
+    onFormInput();
+  });
+}
+function onFormInput() {
+  if (ui.screen === 'receive') paintReceive();
+  else if (ui.screen === 'issue') paintIssue();
+}
+
+/* ================= S2 receive ================= */
+async function renderReceive() {
+  if (!SY.state.items.length) {
+    $('rcvSubmit').disabled = true;
+    $('rcvCtx').hidden = false;
+    $('rcvCtx').innerHTML = 'Add a SKU in Items before receiving stock.';
+    return;
+  }
+  await paintReceive();
+}
+
+async function paintReceive() {
+  const sku = ui.rcvSku;
+  const item = sku ? SY.itemBySku(sku) : null;
+  const sel = $('rcvItem');
+  sel.classList.remove('is-invalid');
+  sel.innerHTML = item ? `
+      <span class="row-main">
+        <span class="row-sku">${esc(item.sku)}</span>
+        <span class="row-desc">${esc(item.description)} · ${esc(item.uom)}</span>
+      </span><span class="chg">Change</span>`
+    : '<span class="row-main"><span class="placeholder">Tap to choose item</span></span>';
+
+  $('rcvUom').textContent = item ? `(${item.uom})` : '';
+  const ctx = $('rcvCtx');
+  if (item) {
+    const b = await SY.projectedFor(sku);
+    ctx.hidden = false;
+    ctx.innerHTML = `In yard now — <b>${n(b.total)}</b> total · ✓ ${n(b.good)} good · ⚠ ${n(b.damaged)} damaged`;
+  } else { ctx.hidden = true; }
+
+  const qty = readNum('rcvQty');
+  const dmg = readNum('rcvDmg') ?? 0;
+  const qErr = $('rcvQtyErr'), dErr = $('rcvDmgErr');
+  qErr.textContent = ''; dErr.textContent = '';
+  $('rcvQty').classList.remove('is-invalid');
+  $('rcvDmg').classList.remove('is-invalid');
+
+  let valid = !!item;
+  if (qty === null) { valid = false; }
+  else if (qty < 1) { qErr.textContent = 'Quantity must be at least 1.'; $('rcvQty').classList.add('is-invalid'); valid = false; }
+  if (qty !== null && dmg > qty) {
+    dErr.textContent = `Damaged cannot be more than the ${n(qty)} you received.`;
+    $('rcvDmg').classList.add('is-invalid');
+    valid = false;
+  }
+
+  const pv = $('rcvPreview');
+  if (item && qty !== null && qty >= 1 && dmg <= qty) {
+    const b = await SY.projectedFor(sku);
+    pv.hidden = false;
+    pv.innerHTML = `
+      <div class="line"><span>Receiving <b>${n(qty)}</b></span>
+        <span>→ <b style="color:var(--good-ink)">${n(qty - dmg)} good</b> + <b style="color:var(--rsa-red)">${n(dmg)} damaged</b></span></div>
+      ${stockBar(qty, dmg)}
+      <div class="line" style="margin-top:var(--s-3);color:var(--muted)">
+        <span>Yard after this</span>
+        <span>${n(b.total + qty)} total · ${n(b.good + qty - dmg)} good · ${n(b.damaged + dmg)} damaged</span></div>`;
+  } else { pv.hidden = true; }
+
+  $('rcvSubmit').disabled = !valid;
+  $('rcvSubmit').textContent = valid ? `Receive ${n(qty)} ${item.uom}` : 'Receive';
+}
+
+$('rcvSubmit').onclick = async () => {
+  const btn = $('rcvSubmit');
+  const sku = ui.rcvSku;
+  const qty = readNum('rcvQty');
+  const dmg = readNum('rcvDmg') ?? 0;
+  if (!sku || qty === null || qty < 1 || dmg > qty) return;
+
+  btn.disabled = true;
+  await OB.enqueue({
+    type: 'INBOUND', sku,
+    payload: { qty, damagedQty: dmg, refNo: $('rcvRef').value.trim(), remarks: $('rcvNote').value.trim() },
+    recordedBy: prefs.getUser()
+  });
+  buzz();
+  const item = SY.itemBySku(sku);
+  toast(dmg > 0
+    ? `Received ${n(qty)} ${item.uom} of ${sku}. ${n(dmg)} damaged.`
+    : `Received ${n(qty)} ${item.uom} of ${sku}.`);
+  // Keep the item selected — several trucks of the same SKU arrive in a row.
+  $('rcvQty').value = ''; $('rcvDmg').value = '0';
+  $('rcvRef').value = ''; $('rcvNote').value = '';
+  await paintReceive();
+  await renderSync();
+  warnOfflineOnce();
+};
+
+/* ================= S3 issue ================= */
+async function renderIssue() {
+  if (!SY.state.items.length) {
+    $('issSubmit').disabled = true;
+    return;
+  }
+  await paintIssue();
+}
+
+async function paintIssue() {
+  const sku = ui.issSku;
+  const item = sku ? SY.itemBySku(sku) : null;
+  const sel = $('issItem');
+  sel.classList.remove('is-invalid');
+  sel.innerHTML = item ? `
+      <span class="row-main">
+        <span class="row-sku">${esc(item.sku)}</span>
+        <span class="row-desc">${esc(item.description)} · ${esc(item.uom)}</span>
+      </span><span class="chg">Change</span>`
+    : '<span class="row-main"><span class="placeholder">Tap to choose item</span></span>';
+  $('issUom').textContent = item ? `(${item.uom})` : '';
+
+  const av = $('issAvail');
+  let good = 0;
+  if (item) {
+    const b = await SY.projectedFor(sku);
+    good = b.good;
+    av.hidden = false;
+    av.className = 'avail' + (good <= 0 ? ' zero' : '');
+    av.innerHTML = `
+      <div class="eyebrow">Available to issue</div>
+      <div class="v">${n(good)}</div>
+      <div style="font-size:var(--fs-sm);color:var(--muted)">${esc(item.uom)}</div>
+      ${stockBar(b.total, b.damaged)}
+      <div class="sub">${good <= 0
+        ? 'Nothing available to issue.'
+        : `${n(b.total)} total · ${n(b.damaged)} damaged can't be issued`}</div>`;
+    $('issAll').textContent = `All ${n(good)}`;
+  } else { av.hidden = true; }
+
+  const qty = readNum('issQty');
+  const err = $('issQtyErr');
+  err.textContent = '';
+  $('issQty').classList.remove('is-invalid');
+
+  let valid = !!item && good > 0;
+  if (qty === null) valid = false;
+  else if (qty < 1) { err.textContent = 'Quantity must be at least 1.'; valid = false; }
+  else if (item && qty > good) {
+    err.textContent = `Only ${n(good)} ${item.uom} available. You can't issue more than that.`;
+    $('issQty').classList.add('is-invalid');
+    valid = false;
+  }
+
+  const pv = $('issPreview');
+  if (valid) {
+    const b = await SY.projectedFor(sku);
+    pv.hidden = false;
+    pv.innerHTML = `<div class="line"><span>Left after this</span>
+      <span><b>${n(b.good - qty)} good</b> · ${n(b.total - qty)} total</span></div>
+      ${qty === good ? '<span class="chip chip-neutral" style="margin-top:var(--s-2)">This will empty the good stock</span>' : ''}`;
+  } else { pv.hidden = true; }
+
+  $('issSubmit').disabled = !valid;
+  $('issSubmit').textContent = valid ? `Issue ${n(qty)} ${item.uom}` : 'Issue';
+};
+
+$('issAll').onclick = async () => {
+  if (!ui.issSku) return;
+  const b = await SY.projectedFor(ui.issSku);
+  $('issQty').value = String(Math.max(0, b.good));
+  paintIssue();
+};
+
+$('issSubmit').onclick = async () => {
+  const sku = ui.issSku;
+  const qty = readNum('issQty');
+  if (!sku || qty === null || qty < 1) return;
+  $('issSubmit').disabled = true;
+
+  await OB.enqueue({
+    type: 'OUTBOUND', sku,
+    payload: { qty, condition: 'GOOD', refNo: $('issRef').value.trim(), remarks: $('issNote').value.trim() },
+    recordedBy: prefs.getUser()
+  });
+  buzz();
+  const item = SY.itemBySku(sku);
+  const after = await SY.projectedFor(sku);
+  toast(`Issued ${n(qty)} ${item.uom} of ${sku}. ${n(after.good)} good left.`);
+  $('issQty').value = ''; $('issRef').value = ''; $('issNote').value = '';
+  await paintIssue();
+  await renderSync();
+  warnOfflineOnce();
+};
+
+/* ================= S5 record damage ================= */
+async function openDamageSheet(sku) {
+  const item = SY.itemBySku(sku);
+  const b = await SY.projectedFor(sku);
+  openSheet({
+    title: 'Record damage',
+    body: `
+      <p style="font-size:var(--fs-sm);color:var(--muted);margin-bottom:var(--s-3)">
+        ${esc(sku)} · ${esc(item?.description || '')}</p>
+      <div class="note-info">
+        This does <b>NOT</b> reduce your total stock.<br>
+        It moves stock from <b>GOOD to DAMAGED</b>.
+      </div>
+      <div class="field">
+        <label class="field-label eyebrow" for="dmgQty">
+          How many are damaged? <span class="req">*</span> (${esc(item?.uom || '')})</label>
+        <div class="stepper">
+          <button type="button" id="dmgMinus" aria-label="Less">−</button>
+          <input id="dmgQty" type="text" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done"
+            placeholder="0" aria-label="Damaged quantity">
+          <button type="button" id="dmgPlus" aria-label="More">+</button>
+        </div>
+        <div class="chips">
+          <button class="chip-add" data-dmg="1">+1</button>
+          <button class="chip-add" data-dmg="5">+5</button>
+          <button class="chip-add" data-dmg="10">+10</button>
+        </div>
+        <div class="field-help">Max ${n(b.good)} good available</div>
+        <div class="field-error" id="dmgErr"></div>
+      </div>
+      <div class="preview" id="dmgPreview" hidden></div>
+      <div class="field">
+        <span class="field-label eyebrow">Reason <span class="req">*</span></span>
+        <div class="tiles" id="dmgReasons">
+          ${REASONS.map(r => `<button class="tile" data-reason="${esc(r)}" aria-pressed="false">${esc(r)}</button>`).join('')}
+        </div>
+        <div class="field-error" id="dmgReasonErr"></div>
+      </div>
+      <div class="field" id="dmgOtherWrap" hidden>
+        <label class="field-label eyebrow" for="dmgOther">Details <span class="req">*</span></label>
+        <textarea class="field-input" id="dmgOther" rows="2" maxlength="120"
+          autocapitalize="sentences"></textarea>
+      </div>`,
+    foot: `<button class="btn btn-danger" id="dmgSubmit" disabled>⚠ Record as damaged</button>`
+  });
+
+  let reason = null;
+  const maxGood = b.good;
+
+  const repaint = () => {
+    const qty = readNum('dmgQty');
+    const err = $('dmgErr');
+    err.textContent = '';
+    $('dmgQty').classList.remove('is-invalid');
+    let valid = true;
+    if (qty === null) valid = false;
+    else if (qty < 1) { err.textContent = 'Quantity must be at least 1.'; valid = false; }
+    else if (qty > maxGood) {
+      err.textContent = `Only ${n(maxGood)} good ${item?.uom || 'units'} available. You can't mark more than that as damaged.`;
+      $('dmgQty').classList.add('is-invalid');
+      valid = false;
+    }
+    const pv = $('dmgPreview');
+    if (qty !== null && qty >= 1 && qty <= maxGood) {
+      pv.hidden = false;
+      pv.innerHTML = `
+        <div class="line"><span>TOTAL <b>${n(b.total)}</b> → <b>${n(b.total)}</b></span>
+          <span style="font-weight:var(--fw-8)">(unchanged)</span></div>
+        <div class="line"><span>✓ GOOD ${n(b.good)} → <b style="color:var(--good-ink)">${n(b.good - qty)}</b></span>
+          <span>⚠ DAMAGED ${n(b.damaged)} → <b style="color:var(--rsa-red)">${n(b.damaged + qty)}</b></span></div>
+        ${stockBar(b.total, b.damaged + qty)}`;
+    } else { pv.hidden = true; }
+
+    if (!reason) valid = false;
+    if (reason === 'Other' && $('dmgOther').value.trim().length < 3) valid = false;
+    $('dmgSubmit').disabled = !valid;
+    $('dmgSubmit').textContent = (qty && qty >= 1) ? `⚠ Record ${n(qty)} as damaged` : '⚠ Record as damaged';
+  };
+
+  $('dmgQty').addEventListener('input', e => {
+    const clean = e.target.value.replace(/[^\d]/g, '').slice(0, 6);
+    if (clean !== e.target.value) e.target.value = clean;
+    repaint();
+  });
+  const bump = by => {
+    const cur = readNum('dmgQty') ?? 0;
+    $('dmgQty').value = String(Math.max(0, Math.min(maxGood, cur + by)));
+    repaint();
+  };
+  $('dmgMinus').onclick = () => bump(-1);
+  $('dmgPlus').onclick = () => bump(1);
+  for (const c of document.querySelectorAll('[data-dmg]')) {
+    c.onclick = () => bump(parseInt(c.dataset.dmg, 10));
+  }
+  for (const t of $('dmgReasons').querySelectorAll('[data-reason]')) {
+    t.onclick = () => {
+      reason = t.dataset.reason;
+      for (const o of $('dmgReasons').querySelectorAll('[data-reason]')) {
+        o.setAttribute('aria-pressed', String(o === t));
+      }
+      $('dmgOtherWrap').hidden = reason !== 'Other';
+      $('dmgReasonErr').textContent = '';
+      repaint();
+    };
+  }
+  $('dmgOther').addEventListener('input', repaint);
+
+  $('dmgSubmit').onclick = () => {
+    const qty = readNum('dmgQty');
+    if (!qty || qty < 1 || qty > maxGood || !reason) return;
+    const detail = reason === 'Other' ? $('dmgOther').value.trim() : '';
+    closeSheet();
+    confirmSheet({
+      title: 'Mark as damaged?',
+      message: `<b>${n(qty)} ${esc(item?.uom || '')}</b> of ${esc(sku)} · ${esc(reason)}.<br><br>
+        Good stock goes ${n(b.good)} → <b>${n(b.good - qty)}</b>.
+        Total stays <b>${n(b.total)}</b>.`,
+      confirmLabel: 'Yes, record damage',
+      danger: true,
+      onConfirm: async () => {
+        await OB.enqueue({
+          type: 'DAMAGE', sku,
+          payload: { qty, remarks: detail ? `${reason}: ${detail}` : reason },
+          recordedBy: prefs.getUser()
+        });
+        buzz();
+        toast(`${n(qty)} ${item?.uom || ''} marked damaged. Total stock unchanged.`);
+        await render();
+        warnOfflineOnce();
+      }
+    });
+  };
+  repaint();
+}
+
+/* ================= S1 items ================= */
+function renderItems() {
+  const q = ui.itemSearch.trim();
+  const all = SY.state.items.filter(i => matches(i, q));
+  $('itemCount').textContent = SY.state.items.length
+    ? (q ? `${all.length} of ${SY.state.items.length} match “${q}”` : `${SY.state.items.length} items`)
+    : '';
+
+  const list = $('itemList');
+  if (!SY.state.items.length) {
+    list.innerHTML = `<div class="empty"><span class="g">📦</span><h3>No items yet</h3>
+      <p>Add your first SKU to start tracking yard stock.</p>
+      <button class="btn" id="emAdd">+ Add item</button></div>`;
+    $('emAdd').onclick = () => openItemForm();
+    return;
+  }
+  if (!all.length) {
+    list.innerHTML = `<div class="empty"><span class="g">🔍</span>
+      <h3>No item matches “${esc(q)}”</h3><p>Check the spelling, or add it as a new item.</p>
+      <button class="btn btn-ghost" id="emAdd2">+ Add “${esc(q.toUpperCase())}” as a new item</button></div>`;
+    $('emAdd2').onclick = () => openItemForm(null, q.toUpperCase());
+    return;
+  }
+  list.innerHTML = all.slice(0, 200).map(i => `
+    <button class="row" data-item="${esc(i.sku)}">
+      <span class="row-main">
+        <span class="row-sku">${esc(i.sku)}</span>
+        <span class="row-desc">${esc(i.description)}</span>
+      </span>
+      <span class="chip chip-neutral">${esc(i.uom)}</span>
+      <span class="chev">›</span>
+    </button>`).join('');
+  for (const b of list.querySelectorAll('[data-item]')) {
+    b.onclick = () => openItemForm(b.dataset.item);
+  }
+}
+
+$('itemSearch').oninput = e => { ui.itemSearch = e.target.value; renderItems(); };
+$('itemClear').onclick = () => { ui.itemSearch = ''; $('itemSearch').value = ''; renderItems(); };
+$('fabAddItem').onclick = () => openItemForm();
+
+async function openItemForm(existingSku, prefillSku) {
+  const item = existingSku ? SY.itemBySku(existingSku) : null;
+  const bal = existingSku ? await SY.projectedFor(existingSku) : { total: 0, damaged: 0 };
+  const hasMoves = !!(existingSku && (bal.total !== 0 || bal.damaged !== 0));
+
+  openSheet({
+    title: item ? 'Edit item' : 'Add item',
+    body: `
+      <div class="field">
+        <label class="field-label eyebrow" for="ifSku">SKU code <span class="req">*</span></label>
+        <input class="field-input" id="ifSku" type="text" autocapitalize="characters"
+          autocomplete="off" spellcheck="false" maxlength="24" enterkeyhint="next"
+          value="${esc(item?.sku || prefillSku || '')}" ${item ? 'readonly' : ''}>
+        ${item ? '<div class="field-help">SKU code can\\'t be changed — the stock history is keyed to it.</div>' : ''}
+        <div class="field-error" id="ifSkuErr"></div>
+      </div>
+      <div class="field">
+        <label class="field-label eyebrow" for="ifDesc">Description <span class="req">*</span></label>
+        <input class="field-input" id="ifDesc" type="text" autocapitalize="sentences"
+          maxlength="80" enterkeyhint="done" value="${esc(item?.description || '')}">
+        <div class="field-error" id="ifDescErr"></div>
+      </div>
+      <div class="field">
+        <span class="field-label eyebrow">Unit</span>
+        <div class="chips" id="ifUoms">
+          ${SY.state.uoms.map(u => `<button class="chip-filter" data-uom="${u}"
+            aria-pressed="${String(u === (item?.uom || 'PCS'))}">${u}</button>`).join('')}
+        </div>
+      </div>
+      ${item ? '' : `
+      <div class="eyebrow" style="margin:var(--s-5) 0 var(--s-2)">Opening stock</div>
+      <div class="field">
+        <label class="field-label eyebrow" for="ifGood">Good</label>
+        <div class="stepper">
+          <button type="button" id="ifGoodMinus">−</button>
+          <input id="ifGood" type="text" inputmode="numeric" pattern="[0-9]*" value="0">
+          <button type="button" id="ifGoodPlus">+</button>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label eyebrow" for="ifDmg">Damaged (of which)</label>
+        <div class="stepper">
+          <button type="button" id="ifDmgMinus">−</button>
+          <input id="ifDmg" type="text" inputmode="numeric" pattern="[0-9]*" value="0">
+          <button type="button" id="ifDmgPlus">+</button>
+        </div>
+      </div>
+      <div class="preview" id="ifPreview" hidden></div>`}
+      ${hasMoves ? `<div class="note-info" style="margin-top:var(--s-4)">
+        Opening stock is locked because this item already has movements.
+        Use <b>Receive</b>, <b>Issue</b> or <b>Record damage</b> instead.</div>` : ''}`,
+    foot: `<button class="btn" id="ifSave" disabled>Save item</button>`
+  });
+
+  let uom = item?.uom || 'PCS';
+  for (const b of $('ifUoms').querySelectorAll('[data-uom]')) {
+    b.onclick = () => {
+      uom = b.dataset.uom;
+      for (const o of $('ifUoms').querySelectorAll('[data-uom]')) {
+        o.setAttribute('aria-pressed', String(o === b));
+      }
+    };
+  }
+
+  const stepOpening = (id, by) => {
+    const cur = parseInt(($(id).value || '0').replace(/[^\d]/g, ''), 10) || 0;
+    $(id).value = String(Math.max(0, Math.min(999999, cur + by)));
+    validate();
+  };
+  if (!item) {
+    $('ifGoodMinus').onclick = () => stepOpening('ifGood', -1);
+    $('ifGoodPlus').onclick = () => stepOpening('ifGood', 1);
+    $('ifDmgMinus').onclick = () => stepOpening('ifDmg', -1);
+    $('ifDmgPlus').onclick = () => stepOpening('ifDmg', 1);
+    for (const id of ['ifGood','ifDmg']) {
+      $(id).addEventListener('input', e => {
+        e.target.value = e.target.value.replace(/[^\d]/g, '').slice(0, 6);
+        validate();
+      });
+    }
+  }
+
+  function validate() {
+    const sku = ($('ifSku').value || '').trim().toUpperCase();
+    const desc = ($('ifDesc').value || '').trim();
+    const se = $('ifSkuErr'), de = $('ifDescErr');
+    se.textContent = ''; de.textContent = '';
+    $('ifSku').classList.remove('is-invalid');
+    $('ifDesc').classList.remove('is-invalid');
+    let ok = true;
+
+    if (!sku) ok = false;
+    else if (sku.length < 2) { se.textContent = 'SKU code must be at least 2 characters.'; ok = false; }
+    else if (!/^[A-Z0-9][A-Z0-9\-_.\/]*$/.test(sku)) {
+      se.textContent = 'Use only letters, numbers and dashes.';
+      $('ifSku').classList.add('is-invalid'); ok = false;
+    } else if (!item && SY.state.items.some(i => i.sku === sku)) {
+      se.textContent = `SKU ${sku} already exists.`;
+      $('ifSku').classList.add('is-invalid'); ok = false;
+    }
+    if (!desc) ok = false;
+    else if (desc.length < 3) { de.textContent = 'Description must be at least 3 characters.'; ok = false; }
+
+    if (!item) {
+      const g = parseInt(($('ifGood').value || '0').replace(/[^\d]/g, ''), 10) || 0;
+      const d = parseInt(($('ifDmg').value || '0').replace(/[^\d]/g, ''), 10) || 0;
+      const pv = $('ifPreview');
+      if (g + d > 0) {
+        pv.hidden = false;
+        pv.innerHTML = `<div class="line"><span>Opening total <b>${n(g + d)}</b></span>
+          <span>= <b style="color:var(--good-ink)">${n(g)} good</b> + <b style="color:var(--rsa-red)">${n(d)} damaged</b></span></div>
+          ${stockBar(g + d, d)}`;
+      } else { pv.hidden = true; }
+    }
+    $('ifSave').disabled = !ok;
+  }
+  $('ifSku').addEventListener('input', validate);
+  $('ifDesc').addEventListener('input', validate);
+  validate();
+
+  $('ifSave').onclick = async () => {
+    const btn = $('ifSave');
+    const sku = ($('ifSku').value || '').trim().toUpperCase();
+    const description = ($('ifDesc').value || '').trim();
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span> Saving…';
+
+    try {
+      await apiPost('upsertItem', {
+        sku, description, uom, recordedBy: prefs.getUser(),
+        rev: item ? item.rev : undefined
+      });
+
+      // Opening stock goes in as an OPENING ledger entry, not as an item field,
+      // so it folds like every other movement.
+      if (!item) {
+        const g = parseInt(($('ifGood').value || '0').replace(/[^\d]/g, ''), 10) || 0;
+        const d = parseInt(($('ifDmg').value || '0').replace(/[^\d]/g, ''), 10) || 0;
+        if (g + d > 0) {
+          await OB.enqueue({
+            type: 'OPENING', sku,
+            payload: { qty: g + d, damagedQty: d, remarks: 'Opening stock' },
+            recordedBy: prefs.getUser()
+          });
+        }
+      }
+      await SY.refreshItems();
+      closeSheet();
+      toast(`Item ${sku} saved.`);
+      await render();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Save item';
+      if (err instanceof ApiError && err.code === 'SKU_EXISTS') {
+        $('ifSkuErr').textContent = `SKU ${sku} already exists.`;
+        $('ifSku').classList.add('is-invalid');
+      }
+      toast(err.message || 'Could not save the item.', 'error');
+    }
+  };
+}
+
+/* ================= failures sheet ================= */
+$('failBanner').onclick = async () => {
+  const failed = await OB.failedItems();
+  openSheet({
+    title: 'Could not be saved',
+    body: failed.length ? failed.map(f => `
+      <div class="row" style="flex-direction:column;align-items:stretch;gap:var(--s-2)">
+        <div style="display:flex;gap:var(--s-2);align-items:center">
+          <span class="row-main">
+            <span class="row-sku">${esc(f.type)} · ${esc(f.sku)}</span>
+            <span class="row-desc">${n(f.payload.qty)}${f.payload.damagedQty ? ` (${n(f.payload.damagedQty)} dmg)` : ''} · ${when(f.clientTs)}</span>
+          </span>
+        </div>
+        <div style="font-size:var(--fs-sm);color:var(--rsa-red);font-weight:var(--fw-6)">
+          ${esc(f.error?.message || 'Rejected')}</div>
+        <div class="btn-row">
+          <button class="btn btn-ghost" data-retry="${f.seq}">Try again</button>
+          <button class="btn btn-danger" data-discard="${f.seq}">Discard</button>
+        </div>
+      </div>`).join('')
+      : `<div class="empty"><span class="g">✅</span><h3>Everything is uploaded</h3>
+         <p>Nothing is waiting on this phone.</p></div>`
+  });
+  for (const b of document.querySelectorAll('[data-retry]')) {
+    b.onclick = async () => {
+      await OB.retryFailed(parseInt(b.dataset.retry, 10));
+      closeSheet();
+      toast('Sent again.', 'info');
+      await render();
+    };
+  }
+  for (const b of document.querySelectorAll('[data-discard]')) {
+    b.onclick = () => {
+      const seq = parseInt(b.dataset.discard, 10);
+      closeSheet();
+      confirmSheet({
+        title: 'Discard this entry?',
+        message: 'This entry will be deleted and never uploaded. This cannot be undone.',
+        confirmLabel: 'Discard', danger: true,
+        onConfirm: async () => { await OB.discardFailed(seq); await render(); }
+      });
+    };
+  }
+};
+
+/* ================= sync sheet ================= */
+$('syncPill').onclick = async () => {
+  const queue = await OB.pendingItems();
+  openSheet({
+    title: 'Pending uploads',
+    body: queue.length ? `
+      <p style="font-size:var(--fs-sm);color:var(--muted);margin-bottom:var(--s-3)">
+        ${queue.length} ${queue.length === 1 ? 'entry' : 'entries'} saved on this phone, waiting to upload.</p>
+      ${queue.map(q => `<div class="mv">
+        <span class="t"><b>${esc(q.type)}</b> ${esc(q.sku)}
+          <span class="when">${when(q.clientTs)} · ${esc(q.recordedBy)}</span>
+          ${q.lastError ? `<span class="when" style="color:var(--rsa-red)">${esc(q.lastError.message)}</span>` : ''}
+        </span>
+        <span class="q">${n(q.payload.qty)}</span>
+        <span class="pending-tag">${q.status === 'stuck' ? '⚠' : '⟳'}</span>
+      </div>`).join('')}`
+      : `<div class="empty"><span class="g">✅</span><h3>Everything is uploaded</h3>
+         <p>Nothing is waiting on this phone.</p></div>`,
+    foot: `<button class="btn" id="syncNow">Try to upload now</button>`
+  });
+  $('syncNow').onclick = async () => { closeSheet(); await doRefresh(); };
+};
+
+/* ================= sync driving ================= */
+let warnedOffline = false;
+async function warnOfflineOnce() {
+  if (warnedOffline) return;
+  const pending = await OB.pendingCount();
+  if (!SY.state.online && pending > 0) {
+    warnedOffline = true;
+    toast("Saved on this phone. It will upload when you're back online.", 'warn');
+  }
+}
+
+async function doRefresh() {
+  const res = await SY.manualRefresh();
+  await render();
+  if (res.ok) {
+    const pending = await OB.pendingCount();
+    toast(pending ? `${pending} still waiting to upload.` : 'Everything is up to date.',
+      pending ? 'info' : 'success');
+  } else {
+    toast(res.error?.message || 'Could not reach the server.', 'error');
+  }
+}
+
+OB.onChange(() => { renderSync(); });
+
+async function checkOnline() {
+  const was = SY.state.online;
+  SY.state.online = navigator.onLine && await probe();
+  if (SY.state.online) warnedOffline = false;
+  if (was !== SY.state.online) {
+    await renderSync();
+    if (SY.state.online) {
+      const summary = await OB.flush();
+      if (summary.balances.length) await SY.mergeBalances(summary.balances);
+      if (summary.applied) toast(`${summary.applied} uploaded.`, 'success');
+      await render();
+    }
+  }
+}
+
+window.addEventListener('online', () => { checkOnline(); });
+window.addEventListener('offline', () => { SY.state.online = false; renderSync(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    OB.flush().then(async s => {
+      if (s.balances.length) await SY.mergeBalances(s.balances);
+      await render();
+    }).catch(() => {});
+  }
+});
+setInterval(async () => {
+  if (await OB.pendingCount() > 0 && SY.state.online) {
+    const s = await OB.flush();
+    if (s.balances.length) await SY.mergeBalances(s.balances);
+    await render();
+  }
+}, 30000);
+
+/* ================= boot ================= */
+async function init() {
+  const msg = $('bootMsg');
+  try {
+    msg.textContent = 'Loading saved data…';
+    await SY.loadFromCache();
+    await OB.recoverInFlight();
+    paintUser();
+
+    msg.textContent = 'Checking connection…';
+    SY.state.online = navigator.onLine;
+
+    // Show the UI from cache immediately — never block the yard on the network.
+    $('boot').hidden = true;
+    show(prefs.getUser() ? 'balance' : 'name');
+
+    try {
+      await SY.bootstrap();
+      SY.state.online = true;
+    } catch (err) {
+      SY.state.online = false;
+      if (err instanceof ApiError && err.code === 'NEEDS_AUTH') {
+        toast(err.message, 'error');
+      } else if (!SY.state.items.length) {
+        toast('Working offline — showing what was saved on this phone.', 'warn');
+      }
+    }
+    if (!prefs.getUser()) show('name');
+    await render();
+
+    const s = await OB.flush();
+    if (s.balances.length) await SY.mergeBalances(s.balances);
+    await render();
+  } catch (err) {
+    $('boot').hidden = true;
+    show('balance');
+    toast('Something went wrong starting up. Pull down to retry.', 'error');
+    console.error(err);
+  }
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  });
+}
+
+init();
+</script>

@@ -1,0 +1,16 @@
+{
+  "name": "Open Yard Inventory",
+  "short_name": "Yard Stock",
+  "description": "Record yard stock receipts, issues and damages, and see live balances.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#002060",
+  "theme_color": "#002060",
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

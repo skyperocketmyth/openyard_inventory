@@ -1,0 +1,14 @@
+{
+  "name": "open-yard-inventory",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Open Yard Inventory - installable no-login PWA over an Apps Script/Google Sheet backend",
+  "scripts": {
+    "test": "node --test test/deltas.test.mjs test/sync.test.mjs",
+    "gate": "node scripts/prepush-gate.mjs",
+    "push": "npm run gate && clasp push --force",
+    "deploy": "npm run gate && clasp push --force && clasp create-deployment"
+  },
+  "devDependencies": {}
+}
