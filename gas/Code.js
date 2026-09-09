@@ -133,6 +133,7 @@ function route_(action, p, body) {
     /* maintenance */
     case 'setup':           return jsonOk_(ensureTabs_());
     case 'rebuildSnapshot': return jsonOk_(rebuildSnapshot_());
+    case 'purgeTestData':  return jsonOk_(purgeTestData_());
 
     default:
       return jsonErr_('UNKNOWN_ACTION', 'Unknown action: ' + action, false);

@@ -129,6 +129,80 @@ function diag_() {
   };
 }
 
+/* ------------------------------------------------------------------ *
+ * purgeTestData — removes ONLY the rows created by the test scripts.
+ *
+ * The scope is HARDCODED, deliberately. This endpoint is reachable by anyone
+ * with the /exec URL (that is what removes the login), so it must not be able
+ * to accept a target from the caller. It can only ever delete rows whose item
+ * code starts with "ZZTEST-" or is exactly "0.99", and users named in the
+ * fixed list below. Real yard data is unreachable from here by construction.
+ * ------------------------------------------------------------------ */
+
+var TEST_SKU_EXACT = ['0.99'];
+var TEST_SKU_PREFIX = 'ZZTEST-';
+var TEST_USERS = ['SMOKE TEST', 'TEMPCHECK'];
+
+function isTestSku_(sku) {
+  var s = normSku_(sku);
+  if (!s) return false;
+  if (s.indexOf(TEST_SKU_PREFIX) === 0) return true;
+  return TEST_SKU_EXACT.indexOf(s) !== -1;
+}
+
+function purgeTestData_() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_MS)) {
+    return { error: 'Server busy, try again' };
+  }
+  try {
+    var removed = { ledger: 0, items: 0, snapshot: 0, rejections: 0, users: 0 };
+
+    // Delete bottom-up so earlier row indexes stay valid as we go.
+    removed.ledger = deleteRowsWhere_(T_LEDGER, function (r) { return isTestSku_(r[3]); });
+    removed.items = deleteRowsWhere_(T_ITEMS, function (r) { return isTestSku_(r[0]); });
+    removed.snapshot = deleteRowsWhere_(T_SNAP, function (r) { return isTestSku_(r[0]); });
+
+    // Every Rejections row so far came from a test run; a rejection is a log
+    // entry, not stock, so clearing it loses no inventory truth.
+    removed.rejections = deleteRowsWhere_(T_REJ, function () { return true; });
+
+    removed.users = deleteRowsWhere_(T_USERS, function (r) {
+      return TEST_USERS.indexOf(str_(r[0]).toUpperCase()) !== -1;
+    });
+
+    // Google's default empty tab, if it is still there and still empty. Named
+    // and emptiness-checked, so this cannot remove anything that holds data.
+    var stray = ss_().getSheetByName('Sheet1');
+    if (stray && stray.getLastRow() === 0 && stray.getLastColumn() === 0) {
+      ss_().deleteSheet(stray);
+      removed.defaultTab = true;
+    }
+
+    bumpEpoch_('ledger_epoch');
+    bumpEpoch_('items_epoch');
+    return removed;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Delete data rows matching a predicate, bottom-up. Returns the count. */
+function deleteRowsWhere_(tabName, predicate) {
+  var sh = tab_(tabName);
+  var last = sh.getLastRow();
+  if (last < 2) return 0;
+  var vals = sh.getRange(2, 1, last - 1, sh.getLastColumn()).getValues();
+  var n = 0;
+  for (var i = vals.length - 1; i >= 0; i--) {
+    if (predicate(vals[i])) {
+      sh.deleteRow(i + 2);
+      n++;
+    }
+  }
+  return n;
+}
+
 /** Seed the user list. Safe to re-run — addUser_ is idempotent by name. */
 function seedUsers(names) {
   var list = names || ['Harish'];

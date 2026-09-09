@@ -376,10 +376,16 @@ function upsertItem_(body) {
     var last = sh.getLastRow();
     var found = 0;
     var curRev = 0;
+    var curActive = true;
     if (last >= 2) {
       var vals = sh.getRange(2, 1, last - 1, H_ITEMS.length).getValues();
       for (var i = 0; i < vals.length; i++) {
-        if (normSku_(vals[i][0]) === sku) { found = i + 2; curRev = num_(vals[i][9]); break; }
+        if (normSku_(vals[i][0]) === sku) {
+          found = i + 2;
+          curRev = num_(vals[i][9]);
+          curActive = !(vals[i][4] === false || String(vals[i][4]).toUpperCase() === 'FALSE');
+          break;
+        }
       }
     }
     var now = new Date();
@@ -394,7 +400,9 @@ function upsertItem_(body) {
         return jsonErr_('STALE_ITEM_REV',
           'Someone else changed ' + sku + ' while you were editing. Reload and try again.', false);
       }
-      var active = body.active === undefined ? true : !!body.active;
+      // An ABSENT field means "leave it as it is". Defaulting to true here made
+      // editing a description silently reactivate a retired item.
+      var active = body.active === undefined ? curActive : !!body.active;
       // The SKU itself is never rewritten — the ledger is keyed on it.
       sh.getRange(found, 2, 1, 4).setValues([[description, uom, barcode, active]]);
       sh.getRange(found, 8, 1, 3).setValues([[by, now, curRev + 1]]);

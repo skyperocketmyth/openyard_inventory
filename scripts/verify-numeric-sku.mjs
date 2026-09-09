@@ -139,11 +139,20 @@ try {
     ok('cleanup returns the item to exactly where it started',
       b.total === baseline.total && b.damaged === baseline.damaged,
       `baseline ${JSON.stringify(baseline)} vs now ${JSON.stringify(b)}`);
-    await post('upsertItem', {
+    // Read the CURRENT rev — hardcoding rev:1 meant every run after the first
+    // hit STALE_ITEM_REV and silently left the test item in the real picker.
+    const fresh = await get('getItems');
+    const cur = (fresh.data.items || []).find(x => x.sku === SKU);
+    const off = await post('upsertItem', {
       sku: SKU, description: 'Numeric-code round-trip test', uom: 'PCS',
-      active: false, rev: 1, recordedBy: USER
+      active: false, rev: cur ? cur.rev : undefined, recordedBy: USER
     });
-    console.log(`  cleanup: ${SKU} deactivated so it stays out of the picker`);
+    ok(`${SKU} is deactivated so it stays out of the real picker`,
+      off.ok === true, JSON.stringify(off.error || off.data));
+    const check = await get('getItems');
+    ok(`${SKU} no longer appears as an active item`,
+      !(check.data.items || []).some(x => x.sku === SKU && x.active),
+      'it would show up in the yard picker');
   } catch { /* best effort */ }
 }
 
