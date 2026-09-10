@@ -17,8 +17,17 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const URL_UNDER_TEST = process.argv[2]
-  || 'https://skyperocketmyth.github.io/openyard_inventory/';
+/**
+ * Normalised to a directory URL. Every use below concatenates a path onto this,
+ * so a caller passing `.../index.html` (or omitting the trailing slash) would
+ * otherwise silently build `index.htmlmanifest.json` and fail a check that has
+ * nothing to do with what it is testing.
+ */
+const URL_UNDER_TEST = (u => {
+  if (!u) return 'https://skyperocketmyth.github.io/openyard_inventory/';
+  const stripped = u.replace(/(?:index\.html)?(?:[?#].*)?$/, '');
+  return stripped.endsWith('/') ? stripped : stripped + '/';
+})(process.argv[2]);
 const PORT = 9335;
 const CHROME = process.env.CHROME_PATH
   || 'C:/Program Files/Google/Chrome/Application/chrome.exe';

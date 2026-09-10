@@ -144,13 +144,39 @@ function route_(action, p, body) {
  * Sheet helpers
  * ------------------------------------------------------------------ */
 
+/* ---------------------------------------------------------------- *
+ * Per-request memos.
+ *
+ * Every Apps Script HTTP request runs in a FRESH JS context, so a
+ * module-level variable is born and dies inside one request. That is what
+ * makes these memos safe by construction: they CANNOT go stale across
+ * requests — there is nothing to invalidate between two calls — and within
+ * a single request the only writer is us. Where we do write, the memo is
+ * kept coherent explicitly (see metaSet_ / addUser_ / setUserActive_).
+ *
+ * The reason this matters: every response builds metaBlock_, `tab_` used to
+ * re-open the Spreadsheet on every single call, and `metaGet_` re-read the
+ * whole Meta tab per key. A one-line write cost ~30 Sheet round trips.
+ * ---------------------------------------------------------------- */
+
+var _ss = null;         // the Spreadsheet, opened at most once per request
+var _tabs = {};         // tab name -> Sheet
+var _meta = null;       // the whole Meta tab as a map, or null when unread
+var _metaRows = {};     // Meta key -> its Sheet row, learned by the same read
+var _users = null;      // readUsers_() result, or null when unread
+
 function ss_() {
-  return SpreadsheetApp.openById(SHEET_ID);
+  if (!_ss) _ss = SpreadsheetApp.openById(SHEET_ID);
+  return _ss;
 }
 
 function tab_(name) {
+  if (Object.prototype.hasOwnProperty.call(_tabs, name)) return _tabs[name];
   var sh = ss_().getSheetByName(name);
+  // Only a HIT is memoised: a miss must keep throwing every time, because
+  // action=setup can create the tab later in this same request.
   if (!sh) throw new Error('Missing tab: ' + name + ' — run action=setup');
+  _tabs[name] = sh;
   return sh;
 }
 
@@ -168,32 +194,67 @@ function metaGet_(key) {
 }
 
 function metaAll_() {
+  if (_meta) return _meta;
   var out = {};
+  var rowOf = {};
   var vals = rows_(T_META);
   for (var i = 0; i < vals.length; i++) {
     var k = String(vals[i][0] || '').trim();
-    if (k) out[k] = vals[i][1];
+    // The row number is free here and saves metaSet_ re-reading the key column
+    // to find it. Safe because nothing in this project ever deletes or reorders
+    // a Meta row — metaSet_ only overwrites in place or appends.
+    if (k) { out[k] = vals[i][1]; rowOf[k] = i + 2; }
   }
+  // Assigned only on success — a throw here (no Meta tab yet) must stay a
+  // throw on the next call, which is what lets metaBlock_ report needsSetup.
+  _meta = out;
+  _metaRows = rowOf;
   return out;
 }
 
 /** Write a Meta key. Caller is expected to hold the lock for write paths. */
 function metaSet_(key, value) {
   var sh = tab_(T_META);
-  var last = sh.getLastRow();
-  if (last >= 2) {
-    var keys = sh.getRange(2, 1, last - 1, 1).getValues();
-    for (var i = 0; i < keys.length; i++) {
-      if (String(keys[i][0] || '').trim() === key) {
-        sh.getRange(i + 2, 2).setValue(value);
-        return;
+  var row = Object.prototype.hasOwnProperty.call(_metaRows, key)
+    ? _metaRows[key]
+    : 0;
+
+  if (!row) {
+    // Not learned yet (no metaAll_ this request) — fall back to the scan.
+    var last = sh.getLastRow();
+    if (last >= 2) {
+      var keys = sh.getRange(2, 1, last - 1, 1).getValues();
+      for (var i = 0; i < keys.length; i++) {
+        if (String(keys[i][0] || '').trim() === key) { row = i + 2; break; }
       }
     }
   }
-  sh.appendRow([key, value]);
+
+  if (row) {
+    sh.getRange(row, 2).setValue(value);
+  } else {
+    sh.appendRow([key, value]);
+    _metaRows[key] = sh.getLastRow();
+  }
+  // Keep the memo coherent AFTER the Sheet write has succeeded, so a failed
+  // write never leaves a value in memory that is not in the Sheet. Writing
+  // through rather than dropping the memo also means the three metaGet_ calls
+  // metaBlock_ makes on the way out cost nothing.
+  if (_meta) _meta[key] = value;
 }
 
+/**
+ * The read feeding the increment must be FRESH. Epochs are the client's only
+ * "has anything changed?" signal, and in the write paths metaAll_ was first
+ * populated BEFORE the lock was taken (the read_only check) — by the time we
+ * hold the lock another execution may already have bumped the epoch. Reusing
+ * the pre-lock value would rewrite an epoch a phone has already seen, i.e.
+ * silently tell every device that this write never happened. So drop the memo
+ * and re-read under the caller's lock.
+ */
 function bumpEpoch_(key) {
+  _meta = null;
+  _metaRows = {};      // dropped together: metaAll_ repopulates both or neither
   var next = Number(metaGet_(key) || 0) + 1;
   metaSet_(key, next);
   return next;
@@ -303,6 +364,7 @@ function getItemsRead_(sinceEpoch) {
 }
 
 function readUsers_() {
+  if (_users) return _users;
   var out = [];
   var vals = rows_(T_USERS);
   for (var i = 0; i < vals.length; i++) {
@@ -312,6 +374,7 @@ function readUsers_() {
       out.push(name);
     }
   }
+  _users = out;
   return out;
 }
 

@@ -138,11 +138,15 @@ function submitTxnBatch_(body) {
       results.push({ idemKey: idem, status: 'applied', txnId: txnId });
     }
 
+    // `snap` is read once above and threaded from here on. applySnapshotDeltas_
+    // advances it to the post-write figures in place, so the balances we reply
+    // with below are the ones actually now in the Sheet. When nothing was
+    // appended it is untouched, and therefore still correct.
     if (appendRows.length) {
       var sh = tab_(T_LEDGER);
       sh.getRange(sh.getLastRow() + 1, 1, appendRows.length, H_LEDGER.length)
         .setValues(appendRows);
-      applySnapshotDeltas_(deltaMap);
+      snap = applySnapshotDeltas_(deltaMap, snap);
       bumpEpoch_('ledger_epoch');
       for (var k = 0; k < appendRows.length; k++) {
         try { cache.put('idem_' + appendRows[k][1], appendRows[k][0], IDEM_TTL); } catch (e2) {}
@@ -158,7 +162,7 @@ function submitTxnBatch_(body) {
 
     return jsonOk_({
       results: results,
-      balances: balancesForTouched_(Object.keys(touched))
+      balances: balancesForTouched_(Object.keys(touched), snap)
     });
   } catch (err) {
     return jsonErr_('SHEET_ERROR', String(err && err.message || err), true);
@@ -327,9 +331,13 @@ function ledgerIdemKeys_() {
  * Post-commit balances for the SKUs a batch touched. Returning these means the
  * client is TOLD the new state rather than having to do a reconciling read
  * that could clobber writes still pending on the phone.
+ *
+ * `snap` MUST be the map applySnapshotDeltas_ returned, i.e. post-write. It is
+ * only re-read here when a caller has none — passing a pre-write map would
+ * reply to the phone with the balances from before its own entry landed.
  */
-function balancesForTouched_(skus) {
-  var snap = snapshotMap_();
+function balancesForTouched_(skus, snap) {
+  snap = snap || snapshotMap_();
   var out = [];
   for (var i = 0; i < skus.length; i++) {
     var b = balanceOf_(snap, skus[i]);
@@ -432,6 +440,7 @@ function addUser_(body) {
       }
     }
     tab_(T_USERS).appendRow([name, true, new Date()]);
+    _users = null;      // the memo populated by readUsers_() above is now short a name
     return jsonOk_({ name: name, created: true });
   } catch (err) {
     return jsonErr_('SHEET_ERROR', String(err && err.message || err), true);
@@ -463,6 +472,7 @@ function setUserActive_(body) {
     for (var i = 0; i < vals.length; i++) {
       if (str_(vals[i][0]).toUpperCase() === name.toUpperCase()) {
         sh.getRange(i + 2, 2).setValue(active);
+        _users = null;    // the active flag decides who readUsers_() returns
         return jsonOk_({ name: str_(vals[i][0]), active: active });
       }
     }
@@ -541,12 +551,13 @@ function voidTxn_(body) {
 
     var deltaMap = {};
     deltaMap[sku] = { total: d.dTotal, damaged: d.dDamaged, lastTxnTs: now.toISOString() };
-    applySnapshotDeltas_(deltaMap);
+    // Reuse the map read above, and reply from the post-write one it returns.
+    snap = applySnapshotDeltas_(deltaMap, snap);
     bumpEpoch_('ledger_epoch');
 
     return jsonOk_({
       txnId: newId, status: 'applied', voidOf: txnId,
-      balances: balancesForTouched_([sku])
+      balances: balancesForTouched_([sku], snap)
     });
   } catch (err) {
     return jsonErr_('SHEET_ERROR', String(err && err.message || err), true);

@@ -40,12 +40,25 @@ let flushing = false;
 let backoffTimer = null;
 const listeners = new Set();
 
+/**
+ * Bumped on every change to the queue. Read by the balance projection to know
+ * when its memoised result is stale.
+ *
+ * A counter rather than a listener because `emit()` is synchronous and fires
+ * several times per flush; anything doing real work in a listener would run it
+ * five times per upload. A version number is free to read and impossible to
+ * miss.
+ */
+let version = 0;
+export function outboxVersion() { return version; }
+
 export function onChange(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
 
 function emit() {
+  version += 1;
   for (const fn of listeners) {
     try { fn(); } catch { /* a bad listener must not break the queue */ }
   }
@@ -78,6 +91,27 @@ export async function failedCount() {
   return idb.count(STORE_FAILURES);
 }
 
+/**
+ * Both queue counts in one call, memoised on the queue version.
+ *
+ * The sync pill needs both, and it repaints on every `render()` AND on every
+ * `emit()` — which fires five or more times per upload. That was ten
+ * IndexedDB transactions per save for two small integers that had not changed.
+ */
+let countMemo = { key: -1, pending: 0, failed: 0 };
+
+export async function counts() {
+  if (countMemo.key === version) return countMemo;
+  const key = version;
+  const [pending, failed] = await Promise.all([
+    idb.count(STORE_OUTBOX), idb.count(STORE_FAILURES)
+  ]);
+  // Guard against a concurrent change while both counts were in flight: if the
+  // queue moved under us, leave the memo cold rather than caching a torn read.
+  if (version === key) countMemo = { key, pending, failed };
+  return { key, pending, failed };
+}
+
 /** Reset any 'sending' left behind by a reload or an app kill. */
 export async function recoverInFlight() {
   const all = await idb.all(STORE_OUTBOX);
@@ -95,7 +129,20 @@ export async function recoverInFlight() {
 
 /**
  * @param {{type:string, sku:string, payload:object, recordedBy:string}} entry
- * @return {Promise<object>} the queued record
+ * @return {Promise<{rec:object, settled:Promise<object>}>}
+ *
+ * `settled` is the upload attempt this enqueue kicked off, HANDED BACK rather
+ * than swallowed. It has to be, and the reason is a bug that shipped:
+ *
+ * on success the flush DELETES the entry from the queue, and the balances the
+ * server replied with are the only post-write figures anything receives. Drop
+ * them and the screen falls back to `state.balances`, which still holds the
+ * PRE-write number — so the correct figure appears for a moment (while the
+ * entry is still queued and counted) and then jumps BACKWARDS when the upload
+ * succeeds. It reads exactly like the app losing the entry.
+ *
+ * The caller must NOT await it. The whole point of this file (see the header)
+ * is that a yard worker never waits on a round trip.
  */
 export async function enqueue(entry) {
   const rec = {
@@ -112,8 +159,13 @@ export async function enqueue(entry) {
   };
   await idb.add(STORE_OUTBOX, rec);
   emit();
-  flush().catch(() => { /* fire and forget; backoff will retry */ });
-  return rec;
+  // `flush()` never throws (it returns a summary carrying `error`), but a
+  // rejection here must still not become an unhandled one — the entry stays in
+  // the queue either way and backoff retries it.
+  const settled = flush().catch(err => (
+    { sent: 0, applied: 0, rejected: 0, balances: [], error: err }
+  ));
+  return { rec, settled };
 }
 
 /* ------------------------------------------------------------------ *
@@ -284,8 +336,11 @@ export async function retryFailed(seq, patch = {}) {
   await idb.add(STORE_OUTBOX, rec);
   await idb.del(STORE_FAILURES, seq);
   emit();
-  flush().catch(() => {});
-  return rec;
+  // Same contract as `enqueue`: hand the attempt back so its balances land.
+  const settled = flush().catch(err => (
+    { sent: 0, applied: 0, rejected: 0, balances: [], error: err }
+  ));
+  return { rec, settled };
 }
 
 export async function discardFailed(seq) {

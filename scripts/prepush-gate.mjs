@@ -110,8 +110,25 @@ try {
     const otherChanged = changed.some(f => f !== 'docs/sw.js');
     if (otherChanged && !swChanged) {
       problems.push(`docs/ changed (${changed.join(', ')}) but docs/sw.js did not — bump CACHE in docs/sw.js or phones keep serving the old build`);
+    } else if (otherChanged) {
+      // sw.js appearing in the diff is NOT proof the cache name moved — editing
+      // a comment in it used to satisfy this check while leaving every install
+      // pinned to the old build. Compare the actual CACHE string against HEAD.
+      const cacheOf = src => (src.match(/CACHE\s*=\s*['"]([^'"]+)['"]/) || [])[1] || null;
+      const now = cacheOf(readFileSync('docs/sw.js', 'utf8'));
+      let head = null;
+      try {
+        head = cacheOf(execFileSync('git', ['show', 'HEAD:docs/sw.js'], { encoding: 'utf8' }));
+      } catch { /* sw.js is new in this commit — nothing to compare */ }
+      if (!now) {
+        problems.push('docs/sw.js has no recognisable CACHE = "..." constant');
+      } else if (head && head === now) {
+        problems.push(`docs/ changed and docs/sw.js was touched, but CACHE is still '${now}' — bump it or phones keep serving the old build`);
+      } else {
+        notes.push(`sw.js CACHE bumped${head ? ` ${head} -> ${now}` : ` to ${now}`} (${changed.length} docs file(s) changed)`);
+      }
     } else {
-      notes.push(`docs/ changes include a sw.js bump (${changed.length} file(s) changed)`);
+      notes.push(`only docs/sw.js changed (${changed.length} file(s))`);
     }
   }
 } catch { /* no HEAD yet — first commit */ }

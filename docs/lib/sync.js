@@ -13,8 +13,22 @@
 
 import { cacheGet, cacheSet, prefs } from './idb.js';
 import { apiGet, ApiError } from './api.js';
-import { pendingCount, pendingItems, flush } from './outbox.js';
+import { pendingCount, pendingItems, flush, outboxVersion } from './outbox.js';
 import { projectBalances } from './deltas.js';
+
+/**
+ * Bumped every time `state.balances` is replaced. Half of the projection's
+ * cache key; the other half is the outbox version.
+ *
+ * BOTH are required. Keying on the outbox alone looks sufficient — the queue is
+ * what changes as the user taps — but `state.balances` also changes on
+ * `bootstrap`, `mergeBalances` and `refreshBalances`, and none of those touch
+ * the queue. A cache keyed only on the outbox would therefore go stale at
+ * exactly the moment a sync lands, re-creating the very stale-figure bug this
+ * layer exists to prevent.
+ */
+let balancesVersion = 0;
+function bumpBalances() { balancesVersion += 1; }
 
 /**
  * @param {number} pendingBefore count taken immediately BEFORE issuing the read
@@ -52,7 +66,7 @@ export async function loadFromCache() {
   ]);
   if (items) state.items = items;
   if (users) state.users = users;
-  if (balances) state.balances = balances;
+  if (balances) { state.balances = balances; bumpBalances(); }
   if (meta) {
     state.epoch = meta.epoch || 0;
     state.itemsEpoch = meta.itemsEpoch || 0;
@@ -91,6 +105,7 @@ export async function mergeBalances(rows) {
     });
   }
   state.balances = [...map.values()].sort((a, b) => (a.sku < b.sku ? -1 : 1));
+  bumpBalances();
   state.lastSyncTs = new Date().toISOString();
   await persist();
 }
@@ -116,6 +131,7 @@ export async function bootstrap() {
   // Balances are the contested resource, so they go through the gate.
   if (canAdoptServerSnapshot(before, after)) {
     state.balances = d.balances || [];
+    bumpBalances();
   } else {
     await mergeBalances(d.balances || []);
   }
@@ -144,6 +160,7 @@ export async function refreshBalances() {
   state.epoch = d.epoch || state.epoch;
   if (canAdoptServerSnapshot(before, after)) {
     state.balances = d.balances || [];
+    bumpBalances();
   } else {
     await mergeBalances(d.balances || []);
   }
@@ -195,16 +212,35 @@ export async function manualRefresh() {
 /**
  * Server balances with every unsynced local entry layered on top.
  * Never render `state.balances` directly.
+ *
+ * Memoised, because this is on the typing path. Every keystroke in a quantity
+ * box or a search field used to re-read the whole outbox from IndexedDB and
+ * re-fold every balance — twice per keystroke in the quantity fields, since
+ * `projectedFor` ran the full projection and then picked one row out of it.
+ *
+ * The cache key is (outbox version, balances version) and both halves matter —
+ * see the note on `balancesVersion` above.
  */
+let memo = { key: '', rows: null, bySku: null };
+
 export async function projected() {
+  const key = outboxVersion() + ':' + balancesVersion;
+  if (memo.key === key && memo.rows) return memo.rows;
+
   const queue = await pendingItems();
-  return projectBalances(state.balances, queue);
+  const rows = projectBalances(state.balances, queue);
+
+  // The index is built here rather than on demand so that `projectedFor` is a
+  // map lookup: the quantity fields call it on every keystroke.
+  const bySku = new Map(rows.map(r => [r.sku, r]));
+  memo = { key, rows, bySku };
+  return rows;
 }
 
 export async function projectedFor(sku) {
   const key = String(sku || '').trim().toUpperCase();
-  const rows = await projected();
-  return rows.find(r => r.sku === key)
+  await projected();                       // fills the memo, cheap when warm
+  return memo.bySku.get(key)
     || { sku: key, total: 0, damaged: 0, good: 0, pending: 0 };
 }
 

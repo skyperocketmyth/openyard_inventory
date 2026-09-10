@@ -126,12 +126,31 @@ function balanceOf_(snap, sku) {
 /**
  * Apply folded deltas to the snapshot tab. Must be called while holding the
  * script lock — it is a read-modify-write, which is only safe under the lock.
+ *
+ * `snap` is the caller's already-read snapshotMap_(). Passing it in matters:
+ * a write path needs the map three times (validate, apply, reply) and each
+ * re-read was a full pass over the tab inside the lock.
+ *
+ * It is mutated in place to the POST-write figures and returned, so the caller
+ * can hand it straight to balancesForTouched_ — the balances we reply with must
+ * be the ones we just wrote, never the pre-write map.
+ *
+ * The tab is touched at most twice regardless of how many SKUs moved: one read
+ * of the existing rows, one write of the (contiguous) window they live in, and
+ * one append for SKUs the snapshot has never seen. The previous shape issued a
+ * setValues() PER SKU, so a 25-line batch cost 25 round trips under the lock.
+ *
+ * @return {Object} the same map, at post-write values
  */
-function applySnapshotDeltas_(deltaMap) {
+function applySnapshotDeltas_(deltaMap, snap) {
   var sh = tab_(T_SNAP);
-  var snap = snapshotMap_();
+  snap = snap || snapshotMap_();
   var now = new Date();
+  var last = sh.getLastRow();
+  var grid = last >= 2 ? sh.getRange(2, 1, last - 1, H_SNAP.length).getValues() : [];
   var appends = [];
+  var lo = -1;
+  var hi = -1;
 
   for (var sku in deltaMap) {
     if (!Object.prototype.hasOwnProperty.call(deltaMap, sku)) continue;
@@ -141,15 +160,37 @@ function applySnapshotDeltas_(deltaMap) {
       var total = cur.total + d.total;
       var damaged = cur.damaged + d.damaged;
       var ts = d.lastTxnTs && d.lastTxnTs > cur.lastTxnTs ? d.lastTxnTs : cur.lastTxnTs;
-      sh.getRange(cur.row, 1, 1, H_SNAP.length)
-        .setValues([[sku, total, damaged, total - damaged, ts, now]]);
+      // snapshotMap_ records `row` as a 1-based Sheet row starting at 2, and
+      // `grid` is that same range — so the offset is always row - 2.
+      var gi = cur.row - 2;
+      grid[gi] = [sku, total, damaged, total - damaged, ts, now];
+      if (lo === -1 || gi < lo) lo = gi;
+      if (gi > hi) hi = gi;
+      cur.total = total;
+      cur.damaged = damaged;
+      cur.lastTxnTs = ts;
     } else {
       appends.push([sku, d.total, d.damaged, d.total - d.damaged, d.lastTxnTs || '', now]);
+      snap[sku] = {
+        total: d.total,
+        damaged: d.damaged,
+        lastTxnTs: d.lastTxnTs || '',
+        row: last + appends.length      // where this row is about to land
+      };
     }
   }
-  if (appends.length) {
-    sh.getRange(sh.getLastRow() + 1, 1, appends.length, H_SNAP.length).setValues(appends);
+  if (lo !== -1) {
+    // Only the window that actually changed is written back. Rewriting the
+    // whole grid would work, but it would also rewrite untouched rows with
+    // values we merely read — pointless risk on the one tab a human might
+    // have poked at.
+    sh.getRange(lo + 2, 1, hi - lo + 1, H_SNAP.length)
+      .setValues(grid.slice(lo, hi + 1));
   }
+  if (appends.length) {
+    sh.getRange(last + 1, 1, appends.length, H_SNAP.length).setValues(appends);
+  }
+  return snap;
 }
 
 /**

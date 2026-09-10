@@ -8,12 +8,14 @@
     "test": "node --test test/deltas.test.mjs test/sync.test.mjs",
     "gate": "node scripts/prepush-gate.mjs",
     "push": "npm run gate && clasp push --force",
-    "deploy": "npm run gate && clasp push --force && clasp create-deployment",
+    "_deploy_note": "NEVER use clasp create-deployment. A new deployment changes the /exec URL and breaks SCRIPT_URL in every installed phone. Redeploy into the existing id only.",
+    "deploy": "npm run gate && clasp push --force && clasp update-deployment --description \"redeploy\" AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn",
     "verify": "node scripts/verify-mobile.mjs && node scripts/verify-flows.mjs",
     "verify:layout": "node scripts/verify-mobile.mjs",
     "verify:flows": "node scripts/verify-flows.mjs",
     "verify:sku": "node scripts/verify-numeric-sku.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "verify:norevert": "node scripts/verify-no-revert.mjs",
     "shots": "node scripts/shoot.mjs"
   },
   "devDependencies": {}

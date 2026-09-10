@@ -170,6 +170,7 @@ function purgeTestData_() {
     removed.users = deleteRowsWhere_(T_USERS, function (r) {
       return TEST_USERS.indexOf(str_(r[0]).toUpperCase()) !== -1;
     });
+    _users = null;      // rows just went away under readUsers_()'s memo
 
     // Google's default empty tab, if it is still there and still empty. Named
     // and emptiness-checked, so this cannot remove anything that holds data.

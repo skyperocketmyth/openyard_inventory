@@ -625,8 +625,7 @@ function confirmSheet({ title, message, confirmLabel, danger, onConfirm }) {
 
 /* ================= sync pill ================= */
 async function renderSync() {
-  const pending = await OB.pendingCount();
-  const failed = await OB.failedCount();
+  const { pending, failed } = await OB.counts();
   const online = SY.state.online;
   const pill = $('syncPill');
   const txt = $('syncText');
@@ -695,6 +694,39 @@ async function render() {
   else if (ui.screen === 'name') renderNames();
 }
 
+/**
+ * Take the upload attempt an enqueue kicked off, merge the balances it replies
+ * with, and repaint.
+ *
+ * NEVER awaited by a submit handler. The upload is deliberately off the
+ * critical path (docs/lib/outbox.js header); awaiting it here would put the
+ * round trip back in front of the user, which is the one thing the outbox
+ * exists to prevent.
+ *
+ * Why it exists: on success the flush deletes the entry from the queue, so if
+ * these balances are dropped the screen falls back to the PRE-write server
+ * figure and the number visibly jumps BACKWARDS a second after saving. It looks
+ * exactly like the app losing the entry, and it is what it used to do.
+ */
+function settleInBackground(settled) {
+  settled.then(async s => {
+    if (s && s.balances && s.balances.length) await SY.mergeBalances(s.balances);
+    await render();
+  }).catch(() => { /* the entry stays queued; backoff retries it */ });
+}
+
+/**
+ * Debounce, for handlers on the typing path. Without it every character
+ * re-projects every balance.
+ */
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => { t = null; fn(...args); }, ms);
+  };
+}
+
 /* ================= S0a name picker ================= */
 function renderNames() {
   const list = $('nameList');
@@ -756,15 +788,19 @@ $('btnSaveUser').onclick = async () => {
   }
   err.textContent = '';
   SY.state.users = [...SY.state.users, name].sort();
-  try {
-    await apiPost('addUser', { name });
-    pickUser(name);
-  } catch {
-    // Offline: the name works on this phone now and the server learns it later.
-    // Until then the server would reject entries under it, so say so plainly.
-    pickUser(name);
+
+  // Go straight in. This used to await the POST before moving, which meant up
+  // to 20 seconds (api.js API_TIMEOUT_MS) on a dead-looking screen when signal
+  // was weak — and the only thing the wait bought was choosing which toast to
+  // show, since BOTH branches then called pickUser anyway. The name works on
+  // this phone the moment it is typed; the server learning it is not something
+  // anybody needs to stand in the yard waiting for.
+  pickUser(name);
+  apiPost('addUser', { name }).catch(() => {
+    // Until the server has the name it will reject entries recorded under it,
+    // so this has to be said plainly rather than swallowed.
     toast('Saved on this phone. Connect once to finish adding your name.', 'warn');
-  }
+  });
 };
 
 $('userChip').onclick = () => {
@@ -895,7 +931,8 @@ async function renderBalance() {
   }
 }
 
-$('balSearch').oninput = e => { ui.balSearch = e.target.value; renderBalance(); };
+const renderBalanceSoon = debounce(renderBalance, 150);
+$('balSearch').oninput = e => { ui.balSearch = e.target.value; renderBalanceSoon(); };
 $('balClear').onclick = () => { ui.balSearch = ''; $('balSearch').value = ''; renderBalance(); };
 for (const c of $('balSorts').querySelectorAll('[data-sort]')) {
   c.onclick = () => {
@@ -1043,7 +1080,7 @@ async function openPicker(target) {
     }
     if ($('pkAdd')) $('pkAdd').onclick = () => openItemForm(null, q.toUpperCase());
   };
-  $('pkSearch').oninput = paint;
+  $('pkSearch').oninput = debounce(paint, 150);
   await paint();
 }
 
@@ -1159,7 +1196,7 @@ $('rcvSubmit').onclick = async () => {
   if (!sku || qty === null || qty < 1 || dmg > qty) return;
 
   btn.disabled = true;
-  await OB.enqueue({
+  const { settled } = await OB.enqueue({
     type: 'INBOUND', sku,
     payload: { qty, damagedQty: dmg, refNo: $('rcvRef').value.trim(), remarks: $('rcvNote').value.trim() },
     recordedBy: prefs.getUser()
@@ -1174,6 +1211,7 @@ $('rcvSubmit').onclick = async () => {
   $('rcvRef').value = ''; $('rcvNote').value = '';
   await paintReceive();
   await renderSync();
+  settleInBackground(settled);
   warnOfflineOnce();
 };
 
@@ -1257,7 +1295,7 @@ $('issSubmit').onclick = async () => {
   if (!sku || qty === null || qty < 1) return;
   $('issSubmit').disabled = true;
 
-  await OB.enqueue({
+  const { settled } = await OB.enqueue({
     type: 'OUTBOUND', sku,
     payload: { qty, condition: 'GOOD', refNo: $('issRef').value.trim(), remarks: $('issNote').value.trim() },
     recordedBy: prefs.getUser()
@@ -1269,6 +1307,7 @@ $('issSubmit').onclick = async () => {
   $('issQty').value = ''; $('issRef').value = ''; $('issNote').value = '';
   await paintIssue();
   await renderSync();
+  settleInBackground(settled);
   warnOfflineOnce();
 };
 
@@ -1391,7 +1430,7 @@ async function openDamageSheet(sku) {
       confirmLabel: 'Yes, record damage',
       danger: true,
       onConfirm: async () => {
-        await OB.enqueue({
+        const { settled } = await OB.enqueue({
           type: 'DAMAGE', sku,
           payload: { qty, remarks: detail ? `${reason}: ${detail}` : reason },
           recordedBy: prefs.getUser()
@@ -1399,6 +1438,7 @@ async function openDamageSheet(sku) {
         buzz();
         toast(`${n(qty)} ${item?.uom || ''} marked damaged. Total stock unchanged.`);
         await render();
+        settleInBackground(settled);
         warnOfflineOnce();
       }
     });
@@ -1586,11 +1626,12 @@ async function openItemForm(existingSku, prefillSku) {
         const g = parseInt(($('ifGood').value || '0').replace(/[^\d]/g, ''), 10) || 0;
         const d = parseInt(($('ifDmg').value || '0').replace(/[^\d]/g, ''), 10) || 0;
         if (g + d > 0) {
-          await OB.enqueue({
+          const { settled } = await OB.enqueue({
             type: 'OPENING', sku,
             payload: { qty: g + d, damagedQty: d, remarks: 'Opening stock' },
             recordedBy: prefs.getUser()
           });
+          settleInBackground(settled);
         }
       }
       await SY.refreshItems();
@@ -1726,13 +1767,35 @@ document.addEventListener('visibilitychange', () => {
     }).catch(() => {});
   }
 });
+/**
+ * Background sync tick.
+ *
+ * The read is OUTSIDE the "anything pending?" check, deliberately. It used to
+ * be inside, and that meant two things were broken at once:
+ *
+ *  - after a save the queue is empty, so the tick did nothing at all and the
+ *    screen kept the pre-save figure until the app was restarted; and
+ *  - a phone never learned about ANOTHER phone's entries, so two people working
+ *    the same yard each saw their own private stock figure.
+ *
+ * `getBalances` carries our epoch and the server answers "unchanged" when
+ * nothing has been written, so a quiet tick is cheap on the wire.
+ *
+ * 60s not 30s, and skipped while the app is in the background: every tick costs
+ * the server real Sheet reads, and they all contend for one script lock.
+ */
 setInterval(async () => {
-  if (await OB.pendingCount() > 0 && SY.state.online) {
-    const s = await OB.flush();
-    if (s.balances.length) await SY.mergeBalances(s.balances);
+  if (!SY.state.online) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  try {
+    if (await OB.pendingCount() > 0) {
+      const s = await OB.flush();
+      if (s.balances.length) await SY.mergeBalances(s.balances);
+    }
+    await SY.refreshBalances();
     await render();
-  }
-}, 30000);
+  } catch { /* offline or a slow reply — the next tick tries again */ }
+}, 60000);
 
 /* ================= boot ================= */
 async function init() {
