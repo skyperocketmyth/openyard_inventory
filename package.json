@@ -16,6 +16,7 @@
     "verify:sku": "node scripts/verify-numeric-sku.mjs",
     "smoke": "node scripts/smoke.mjs",
     "verify:norevert": "node scripts/verify-no-revert.mjs",
+    "harness": "node scripts/gas-harness.cjs",
     "shots": "node scripts/shoot.mjs"
   },
   "devDependencies": {}
