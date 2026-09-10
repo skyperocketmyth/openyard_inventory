@@ -10,7 +10,58 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { canAdoptServerSnapshot } from '../docs/lib/sync.js';
+/**
+ * A minimal in-memory IndexedDB, installed BEFORE sync.js opens one.
+ *
+ * `mergeBalances` ends in `persist()`, which writes through docs/lib/idb.js.
+ * Node has no IndexedDB, so without this the call rejects and the test would
+ * have to swallow the error — which would also swallow a real failure. Only
+ * the handful of operations idb.js actually uses are implemented; anything
+ * else is deliberately absent so a new caller shows up as an error rather
+ * than as a silent no-op.
+ */
+function installFakeIndexedDb() {
+  const stores = new Map();
+  const storeOf = (n) => {
+    if (!stores.has(n)) stores.set(n, new Map());
+    return stores.get(n);
+  };
+  globalThis.indexedDB = {
+    open() {
+      const req = {};
+      queueMicrotask(() => {
+        req.result = {
+          objectStoreNames: { contains: (n) => stores.has(n) },
+          createObjectStore(n) { storeOf(n); return { createIndex() {} }; },
+          transaction(name) {
+            const m = storeOf(name);
+            const t = {};
+            t.objectStore = () => ({
+              // The cache store is keyed on `key`, the outbox on `seq`.
+              put(v) { const k = v.key !== undefined ? v.key : v.seq; m.set(k, v); return { result: k }; },
+              add(v) { const k = v.key !== undefined ? v.key : v.seq; m.set(k, v); return { result: k }; },
+              get(k) { return { result: m.get(k) }; },
+              getAll() { return { result: [...m.values()] }; },
+              delete(k) { m.delete(k); return { result: undefined }; },
+              count() { return { result: m.size }; },
+              clear() { m.clear(); return { result: undefined }; }
+            });
+            // Fires after the whole synchronous body of idb.js's tx(), which
+            // is where `oncomplete` gets assigned.
+            queueMicrotask(() => { if (t.oncomplete) t.oncomplete(); });
+            return t;
+          }
+        };
+        if (req.onupgradeneeded) req.onupgradeneeded();
+        if (req.onsuccess) req.onsuccess();
+      });
+      return req;
+    }
+  };
+}
+installFakeIndexedDb();
+
+import { canAdoptServerSnapshot, mergeBalances, state } from '../docs/lib/sync.js';
 
 test('adopts only when nothing was pending before OR after the read', () => {
   assert.equal(canAdoptServerSnapshot(0, 0), true);
@@ -35,4 +86,91 @@ test('the gate is not a truthiness check', () => {
   // and then passing undefined from a failed count.
   assert.equal(canAdoptServerSnapshot(undefined, undefined), false);
   assert.equal(canAdoptServerSnapshot(null, null), false);
+});
+
+/* ---------------------------- mergeBalances ----------------------------- */
+/**
+ * `mergeBalances` is how a WRITE's own reply lands on screen without a
+ * follow-up read, which is the whole of the S01 reverting-stock fix. In S02 it
+ * became a COMPOSITE-key merge — one row per (facility, sku) — and had no
+ * coverage at all. A merge that keyed on the SKU alone would look completely
+ * correct in review and would silently overwrite one yard's figure with
+ * another's every time a write came back.
+ */
+
+function setBalances(rows) { state.balances = rows; }
+const rowFor = (fac, sku) =>
+  state.balances.find(b => b.facility === fac && b.sku === sku);
+
+test('mergeBalances keeps the same SKU at two yards as two independent rows', async () => {
+  setBalances([]);
+  await mergeBalances([
+    { facility: 'YARD A', sku: 'X', total: 100, damaged: 4, lastTxnTs: 'a' },
+    { facility: 'YARD B', sku: 'X', total: 60, damaged: 0, lastTxnTs: 'b' }
+  ]);
+  assert.equal(state.balances.length, 2, 'the second yard overwrote the first');
+  assert.equal(rowFor('YARD A', 'X').total, 100);
+  assert.equal(rowFor('YARD A', 'X').damaged, 4);
+  assert.equal(rowFor('YARD B', 'X').total, 60);
+});
+
+test('mergeBalances updating one yard leaves the other yard alone', async () => {
+  setBalances([
+    { facility: 'YARD A', sku: 'X', total: 100, damaged: 0, lastTxnTs: 'a' },
+    { facility: 'YARD B', sku: 'X', total: 60, damaged: 0, lastTxnTs: 'b' }
+  ]);
+  await mergeBalances([{ facility: 'YARD B', sku: 'X', total: 35, damaged: 2, lastTxnTs: 'c' }]);
+  assert.equal(state.balances.length, 2, 'the merge added a row instead of replacing one');
+  assert.equal(rowFor('YARD A', 'X').total, 100, 'YARD A must not move when YARD B is written');
+  assert.equal(rowFor('YARD A', 'X').lastTxnTs, 'a');
+  assert.equal(rowFor('YARD B', 'X').total, 35);
+  assert.equal(rowFor('YARD B', 'X').damaged, 2);
+});
+
+test('mergeBalances adds a yard it has never seen rather than dropping it', async () => {
+  // The destination leg of a transfer arrives this way the first time stock
+  // ever reaches that yard. Dropping it is the reverting-stock bug again.
+  setBalances([{ facility: 'YARD A', sku: 'X', total: 70, damaged: 0, lastTxnTs: 'a' }]);
+  await mergeBalances([{ facility: 'YARD B', sku: 'X', total: 30, damaged: 0, lastTxnTs: 'c' }]);
+  assert.equal(state.balances.length, 2);
+  assert.equal(rowFor('YARD B', 'X').total, 30);
+});
+
+test('mergeBalances normalises the pair, so casing and padding cannot fork a row', async () => {
+  setBalances([{ facility: 'YARD A', sku: 'X', total: 100, damaged: 0, lastTxnTs: 'a' }]);
+  await mergeBalances([{ facility: ' yard a ', sku: ' x ', total: 90, damaged: 0, lastTxnTs: 'c' }]);
+  assert.equal(state.balances.length, 1, 'the same yard and item merged into two rows');
+  assert.equal(rowFor('YARD A', 'X').total, 90);
+});
+
+test('mergeBalances keeps a SKU of 0, which this yard really has', async () => {
+  // The numeric-SKU class of bug: `String(sku || '')` turns a code of 0 into
+  // '', and the row is then filed under the empty key or lost. Live item
+  // codes here include 0.99, 0.50 and 0.3, and commit 4856d64 exists for it.
+  setBalances([]);
+  await mergeBalances([{ facility: 'YARD A', sku: 0, total: 12, damaged: 0, lastTxnTs: 'a' }]);
+  assert.equal(state.balances.length, 1);
+  assert.equal(state.balances[0].sku, '0');
+  assert.equal(state.balances[0].total, 12);
+});
+
+test('mergeBalances is sorted by yard then item, so the stock list is stable', async () => {
+  setBalances([]);
+  await mergeBalances([
+    { facility: 'YARD B', sku: 'B', total: 1, damaged: 0, lastTxnTs: '' },
+    { facility: 'YARD A', sku: 'Z', total: 1, damaged: 0, lastTxnTs: '' },
+    { facility: 'YARD A', sku: 'A', total: 1, damaged: 0, lastTxnTs: '' }
+  ]);
+  assert.deepEqual(
+    state.balances.map(b => b.facility + '|' + b.sku),
+    ['YARD A|A', 'YARD A|Z', 'YARD B|B']
+  );
+});
+
+test('mergeBalances ignores an empty reply instead of clearing what is on screen', async () => {
+  setBalances([{ facility: 'YARD A', sku: 'X', total: 100, damaged: 0, lastTxnTs: 'a' }]);
+  await mergeBalances([]);
+  await mergeBalances(null);
+  assert.equal(state.balances.length, 1);
+  assert.equal(rowFor('YARD A', 'X').total, 100);
 });

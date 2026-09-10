@@ -9,6 +9,15 @@
  */
 
 const DB_NAME = 'oy_db';
+/**
+ * Still 1, deliberately. Bumping this is NOT how a stale cache gets cleared:
+ * `onupgradeneeded` only creates object stores that are missing, so a version
+ * bump leaves every existing row exactly where it was. When a cached blob's
+ * SHAPE changes, change its KEY instead — see BALANCES_CACHE_KEY in sync.js,
+ * which went to 'balances_v2' in S02 for exactly that reason. Raise this only
+ * when the stores themselves change (S04 / PLAN A7 adds the schema-version
+ * driven clear that wipes content).
+ */
 const DB_VERSION = 1;
 
 export const STORE_OUTBOX = 'outbox';
@@ -124,6 +133,17 @@ export const prefs = {
   pushRecent(sku) {
     const list = [sku, ...this.getRecent().filter(s => s !== sku)].slice(0, 8);
     LS.write('oy_recent', JSON.stringify(list));
+    return list;
+  },
+  // The same last-8 list, for vehicle numbers on the issue screen. The same
+  // few trucks come back all day, and retyping a plate on a phone in a yard is
+  // where the typos come from.
+  getRecentVehicles: () => {
+    try { return JSON.parse(LS.read('oy_recent_vehicles', '[]')) || []; } catch { return []; }
+  },
+  pushRecentVehicle(v) {
+    const list = [v, ...this.getRecentVehicles().filter(s => s !== v)].slice(0, 8);
+    LS.write('oy_recent_vehicles', JSON.stringify(list));
     return list;
   },
   getDeviceId() {

@@ -14,18 +14,47 @@
  *   DAMAGED = the subset of TOTAL that is damaged
  *   GOOD    = TOTAL - DAMAGED     (never stored, always derived)
  * Recording damage therefore moves units GOOD -> DAMAGED and leaves TOTAL alone.
+ *
+ * Stock lives at a WAREHOUSE, so the unit of balance is the pair
+ * (facility, sku) — see balKey_. deltasFor_ therefore returns a LIST of
+ * per-facility entries rather than one {dTotal, dDamaged}: a TRANSFER moves
+ * stock between two yards and is a single ledger row with two effects.
  */
+
+/**
+ * The balance key. One string so a plain object can index it, and the ONLY
+ * place the two parts are ever joined.
+ *
+ * X3 — NOTHING MAY EVER SPLIT THIS. Warehouse names are near-free text, so a
+ * '|' inside one would split into a facility that does not exist and silently
+ * move stock to it. Every map keyed this way carries {facility, sku} on the
+ * VALUE and callers read those; upsertFacility_ rejects '|' as the second
+ * defence.
+ */
+function balKey_(facility, sku) {
+  return String(facility || '').trim().toUpperCase() + '|' +
+         String(sku || '').trim().toUpperCase();
+}
 
 /**
  * Every ledger row is a commutative delta. Nothing is an absolute "set to X",
  * which is what makes a late-arriving offline entry land on the right total
  * regardless of the order it reaches the server in.
  *
- * @param {{type:string, qty:number, damagedQty:number, condition:string}} t
- * @return {{dTotal:number, dDamaged:number}}
+ * Returns a LIST. Every type but TRANSFER returns exactly one entry, at
+ * `facility`; TRANSFER returns two, source first then destination. Callers
+ * MUST iterate — reading `.dTotal` off the array yields undefined, and
+ * `NaN < 0` is false, which is how a negative-stock guard can go inert
+ * without erroring (see validateTxn_).
+ *
+ * @param {{type:string, facility:string, toFacility:string, qty:number,
+ *          damagedQty:number, condition:string, voidOfType:string}} t
+ * @return {Array<{facility:string, dTotal:number, dDamaged:number}>}
  */
 function deltasFor_(t) {
   var type = String(t.type || '').toUpperCase();
+  var fac = String(t.facility || '').trim().toUpperCase();
+  var toF = String(t.toFacility || '').trim().toUpperCase();
   var qty = Number(t.qty) || 0;
   var dmg = Number(t.damagedQty) || 0;
   var cond = String(t.condition || 'GOOD').toUpperCase();
@@ -33,59 +62,105 @@ function deltasFor_(t) {
   switch (type) {
     case 'OPENING':
     case 'INBOUND':
-      return { dTotal: qty, dDamaged: dmg };
+      return [{ facility: fac, dTotal: qty, dDamaged: dmg }];
 
     case 'OUTBOUND':
       // Issuing damaged stock must decrement BOTH, or damaged eventually
       // exceeds total and the screen shows negative good stock.
+      //
+      // `0 - qty`, never `-qty`, everywhere a quantity is negated in this
+      // file: `-0` is what `-qty` yields when qty is 0, and the two halves of
+      // this contract disagree about it — gas/Setup.js:runTests compares with
+      // `!==` (where -0 === 0) while test/deltas.test.mjs uses node:assert
+      // strict deepEqual (where -0 !== 0). One of them would pass a drifted
+      // implementation.
       return cond === 'DAMAGED'
-        ? { dTotal: -qty, dDamaged: -qty }
-        : { dTotal: -qty, dDamaged: 0 };
+        ? [{ facility: fac, dTotal: 0 - qty, dDamaged: 0 - qty }]
+        : [{ facility: fac, dTotal: 0 - qty, dDamaged: 0 }];
 
     case 'DAMAGE':
-      return { dTotal: 0, dDamaged: qty };    // good -> damaged, still in the yard
+      // good -> damaged, still in the yard
+      return [{ facility: fac, dTotal: 0, dDamaged: qty }];
 
     case 'REPAIR':
-      return { dTotal: 0, dDamaged: -qty };   // damaged -> good
+      // damaged -> good
+      return [{ facility: fac, dTotal: 0, dDamaged: 0 - qty }];
 
     case 'ADJUST_UP':
-      return { dTotal: qty, dDamaged: 0 };
+      return [{ facility: fac, dTotal: qty, dDamaged: 0 }];
 
     case 'ADJUST_DOWN':
-      return { dTotal: -qty, dDamaged: 0 };
+      return [{ facility: fac, dTotal: 0 - qty, dDamaged: 0 }];
+
+    case 'TRANSFER':
+      // A transfer moves GOOD stock only, so dDamaged is 0 on BOTH legs
+      // whatever `condition` says. Moving damaged stock between yards is out
+      // of scope, and a stray condition:'DAMAGED' arriving from an older
+      // client must not be allowed to change the maths.
+      return [
+        { facility: fac, dTotal: 0 - qty, dDamaged: 0 },
+        { facility: toF, dTotal: qty, dDamaged: 0 }
+      ];
 
     case 'VOID': {
       // A VOID row carries a copy of the original's payload plus the original
       // type, so it is self-sufficient: negate the original's deltas and leave
       // the original row in the fold untouched. One rule, no double-counting.
-      var d = deltasFor_({
+      //
+      // X2b — facility AND toFacility must be forwarded into the recursion.
+      // Without them a voided TRANSFER came back with both legs keyed
+      // 'undefined', i.e. the stock was reversed at a yard that does not exist.
+      var inner = deltasFor_({
         type: t.voidOfType,
+        facility: t.facility,
+        toFacility: t.toFacility,
         qty: qty,
         damagedQty: dmg,
         condition: cond
       });
-      // `0 - x` not `-x`: negating 0 yields -0, which then leaks into totals.
-      return { dTotal: 0 - d.dTotal, dDamaged: 0 - d.dDamaged };
+      var out = [];
+      for (var i = 0; i < inner.length; i++) {
+        // `0 - x` not `-x`: negating 0 yields -0, which then leaks into totals.
+        out.push({
+          facility: inner[i].facility,
+          dTotal: 0 - inner[i].dTotal,
+          dDamaged: 0 - inner[i].dDamaged
+        });
+      }
+      return out;
     }
 
     default:
-      return { dTotal: 0, dDamaged: 0 };
+      // A one-element ZERO entry, never []. An unrecognised type must still
+      // create the row in a fold — a key that vanishes reads as "no stock",
+      // which is worse than an obviously inert row somebody can look at.
+      return [{ facility: fac, dTotal: 0, dDamaged: 0 }];
   }
 }
 
-/** Fold a list of txn-shaped objects into {sku: {total, damaged, lastTxnTs}}. */
+/**
+ * Fold a list of txn-shaped objects into
+ * {'FACILITY|SKU': {facility, sku, total, damaged, lastTxnTs}}.
+ */
 function foldDeltas_(txns, into) {
   var acc = into || {};
   for (var i = 0; i < txns.length; i++) {
     var t = txns[i];
     var sku = normSku_(t.sku);
     if (!sku) continue;
-    if (!acc[sku]) acc[sku] = { total: 0, damaged: 0, lastTxnTs: '' };
-    var d = deltasFor_(t);
-    acc[sku].total += d.dTotal;
-    acc[sku].damaged += d.dDamaged;
+    var list = deltasFor_(t);
     var ts = t.clientTs || '';
-    if (ts && ts > acc[sku].lastTxnTs) acc[sku].lastTxnTs = ts;
+    for (var j = 0; j < list.length; j++) {
+      var e = list[j];
+      var k = balKey_(e.facility, sku);
+      // A blank facility is legacy (pre-schema-2) data. It is kept as its own
+      // visible '|SKU' row rather than dropped — losing stock silently is worse
+      // than showing an obviously wrong row a supervisor can act on.
+      if (!acc[k]) acc[k] = { facility: e.facility, sku: sku, total: 0, damaged: 0, lastTxnTs: '' };
+      acc[k].total += e.dTotal;
+      acc[k].damaged += e.dDamaged;
+      if (ts && ts > acc[k].lastTxnTs) acc[k].lastTxnTs = ts;
+    }
   }
   return acc;
 }
@@ -97,30 +172,50 @@ function foldDeltas_(txns, into) {
  * It is rebuildable from the ledger at any time (action=rebuildSnapshot).
  * ------------------------------------------------------------------ */
 
-/** @return {Object} {sku: {total, damaged, lastTxnTs, row}} */
+/**
+ * @return {Object} {'FACILITY|SKU': {facility, sku, total, damaged,
+ *                                    openingDone, lastTxnTs, row}}
+ */
 function snapshotMap_() {
   var out = {};
   var vals = rows_(T_SNAP);
   for (var i = 0; i < vals.length; i++) {
-    var sku = normSku_(vals[i][0]);
+    var row = vals[i];
+    var sku = normSku_(row[SX.sku]);
     if (!sku) continue;
-    out[sku] = {
-      total: num_(vals[i][1]),
-      damaged: num_(vals[i][2]),
-      lastTxnTs: vals[i][4] instanceof Date
-        ? vals[i][4].toISOString()
-        : str_(vals[i][4]),
+    // A row with a SKU but NO facility is legacy data and is kept under its
+    // own '|SKU' key, matching foldDeltas_. Only a missing sku is skipped.
+    var od = row[SX.opening_done];
+    var ts = row[SX.last_txn_ts];
+    var fac = normFacility_(row[SX.facility]);
+    out[balKey_(fac, sku)] = {
+      facility: fac,
+      sku: sku,
+      total: num_(row[SX.total_qty]),
+      damaged: num_(row[SX.damaged_qty]),
+      // The Sheet gives a real boolean when a checkbox wrote it and the string
+      // "TRUE" when a human typed it. Both must count.
+      openingDone: od === true || String(od).toUpperCase() === 'TRUE',
+      lastTxnTs: ts instanceof Date ? ts.toISOString() : str_(ts),
       row: i + 2
     };
   }
   return out;
 }
 
-/** Balance of one SKU from the snapshot. Zeroed when the SKU is unseen. */
-function balanceOf_(snap, sku) {
-  var b = snap[normSku_(sku)];
-  if (!b) return { total: 0, damaged: 0, good: 0 };
-  return { total: b.total, damaged: b.damaged, good: b.total - b.damaged };
+/**
+ * Balance of one SKU AT ONE WAREHOUSE. Zeroed, and not yet opened, when the
+ * pair is unseen.
+ */
+function balanceOf_(snap, facility, sku) {
+  var b = snap[balKey_(facility, sku)];
+  if (!b) return { total: 0, damaged: 0, good: 0, openingDone: false };
+  return {
+    total: b.total,
+    damaged: b.damaged,
+    good: b.total - b.damaged,
+    openingDone: !!b.openingDone
+  };
 }
 
 /**
@@ -135,10 +230,13 @@ function balanceOf_(snap, sku) {
  * can hand it straight to balancesForTouched_ — the balances we reply with must
  * be the ones we just wrote, never the pre-write map.
  *
- * The tab is touched at most twice regardless of how many SKUs moved: one read
+ * The tab is touched at most twice regardless of how many keys moved: one read
  * of the existing rows, one write of the (contiguous) window they live in, and
- * one append for SKUs the snapshot has never seen. The previous shape issued a
- * setValues() PER SKU, so a 25-line batch cost 25 round trips under the lock.
+ * one append for keys the snapshot has never seen. The previous shape issued a
+ * setValues() PER KEY, so a 25-line batch cost 25 round trips under the lock.
+ *
+ * `deltaMap` is keyed 'FACILITY|SKU' and each value carries
+ * {facility, sku, total, damaged, lastTxnTs, openingSet}.
  *
  * @return {Object} the same map, at post-write values
  */
@@ -152,28 +250,39 @@ function applySnapshotDeltas_(deltaMap, snap) {
   var lo = -1;
   var hi = -1;
 
-  for (var sku in deltaMap) {
-    if (!Object.prototype.hasOwnProperty.call(deltaMap, sku)) continue;
-    var d = deltaMap[sku];
-    var cur = snap[sku];
+  for (var k in deltaMap) {
+    if (!Object.prototype.hasOwnProperty.call(deltaMap, k)) continue;
+    var d = deltaMap[k];
+    var cur = snap[k];
     if (cur) {
       var total = cur.total + d.total;
       var damaged = cur.damaged + d.damaged;
       var ts = d.lastTxnTs && d.lastTxnTs > cur.lastTxnTs ? d.lastTxnTs : cur.lastTxnTs;
+      // X5.4 — `openingSet` is tri-state: true (an OPENING landed here), false
+      // (an OPENING was voided here) and undefined (neither, leave it alone).
+      // The row below is rewritten positionally IN FULL, so an undefined that
+      // defaulted to false would let every ordinary receipt wipe the
+      // once-per-key opening guard.
+      var od = d.openingSet === undefined ? !!cur.openingDone : !!d.openingSet;
       // snapshotMap_ records `row` as a 1-based Sheet row starting at 2, and
       // `grid` is that same range — so the offset is always row - 2.
       var gi = cur.row - 2;
-      grid[gi] = [sku, total, damaged, total - damaged, ts, now];
+      grid[gi] = [d.facility, d.sku, total, damaged, total - damaged, od, ts, now];
       if (lo === -1 || gi < lo) lo = gi;
       if (gi > hi) hi = gi;
       cur.total = total;
       cur.damaged = damaged;
       cur.lastTxnTs = ts;
+      cur.openingDone = od;
     } else {
-      appends.push([sku, d.total, d.damaged, d.total - d.damaged, d.lastTxnTs || '', now]);
-      snap[sku] = {
+      appends.push([d.facility, d.sku, d.total, d.damaged, d.total - d.damaged,
+        !!d.openingSet, d.lastTxnTs || '', now]);
+      snap[k] = {
+        facility: d.facility,
+        sku: d.sku,
         total: d.total,
         damaged: d.damaged,
+        openingDone: !!d.openingSet,
         lastTxnTs: d.lastTxnTs || '',
         row: last + appends.length      // where this row is about to land
       };
@@ -199,6 +308,14 @@ function applySnapshotDeltas_(deltaMap, snap) {
  * snapshot is never a data loss — the ledger is the truth.
  */
 function rebuildSnapshot_() {
+  // Belt and braces on top of the gate in route_: this is the one destructive
+  // function in the project that takes no arguments, so it can also be run by
+  // hand from the Apps Script editor, where route_ never sees it. On a book
+  // that still has the 17-column Ledger every LX.* read below is off by two
+  // and the fold would be garbage — written over the real snapshot.
+  var schemaErr = assertSchema_();
+  if (schemaErr) throw new Error(schemaErr.message);
+
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(LOCK_MS)) {
     throw new Error('Server busy — could not acquire lock to rebuild');
@@ -208,18 +325,40 @@ function rebuildSnapshot_() {
     var txns = [];
     for (var i = 0; i < vals.length; i++) {
       var r = vals[i];
-      if (!normSku_(r[3])) continue;
+      if (!normSku_(r[LX.sku])) continue;
       txns.push({
-        type: str_(r[2]),
-        sku: normSku_(r[3]),
-        qty: num_(r[4]),
-        damagedQty: num_(r[5]),
-        condition: str_(r[6]),
-        clientTs: r[11] instanceof Date ? r[11].toISOString() : str_(r[11]),
-        voidOfType: str_(r[16])
+        type: str_(r[LX.txn_type]),
+        facility: normFacility_(r[LX.facility]),
+        toFacility: normFacility_(r[LX.to_facility]),
+        sku: normSku_(r[LX.sku]),
+        qty: num_(r[LX.qty]),
+        damagedQty: num_(r[LX.damaged_qty]),
+        condition: str_(r[LX.condition]),
+        clientTs: r[LX.client_ts] instanceof Date
+          ? r[LX.client_ts].toISOString() : str_(r[LX.client_ts]),
+        voidOfType: str_(r[LX.void_of_type])
       });
     }
     var folded = foldDeltas_(txns);
+
+    // X5.3 — a rebuild must NOT blank opening_done. It is a FLAG, not a delta,
+    // so the fold cannot carry it and a second pass over the same in-memory
+    // rows derives it: forward order, because the ledger is appended
+    // chronologically and the last write on a key wins. Getting this wrong
+    // matters more than it looks — rebuildSnapshot is routed unauthenticated
+    // on an ANYONE_ANONYMOUS deployment, so a blank-it rebuild would be a
+    // one-click way to re-open every opening balance in the yard.
+    var openingAt = {};
+    for (var m = 0; m < txns.length; m++) {
+      var tx = txns[m];
+      var ok = balKey_(tx.facility, tx.sku);
+      var ty = String(tx.type || '').toUpperCase();
+      if (ty === 'OPENING') {
+        openingAt[ok] = true;
+      } else if (ty === 'VOID' && String(tx.voidOfType || '').toUpperCase() === 'OPENING') {
+        openingAt[ok] = false;
+      }
+    }
 
     var sh = tab_(T_SNAP);
     if (sh.getLastRow() > 1) {
@@ -227,10 +366,11 @@ function rebuildSnapshot_() {
     }
     var now = new Date();
     var out = [];
-    var skus = Object.keys(folded).sort();
-    for (var j = 0; j < skus.length; j++) {
-      var b = folded[skus[j]];
-      out.push([skus[j], b.total, b.damaged, b.total - b.damaged, b.lastTxnTs || '', now]);
+    var keys = Object.keys(folded).sort();
+    for (var j = 0; j < keys.length; j++) {
+      var b = folded[keys[j]];
+      out.push([b.facility, b.sku, b.total, b.damaged, b.total - b.damaged,
+        !!openingAt[keys[j]], b.lastTxnTs || '', now]);
     }
     if (out.length) {
       sh.getRange(2, 1, out.length, H_SNAP.length).setValues(out);

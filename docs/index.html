@@ -469,6 +469,12 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
       placeholder="DO / site">
   </div>
   <div class="field">
+    <label class="field-label eyebrow" for="issVehicle">Vehicle number (optional)</label>
+    <div class="chips" id="issVehChips" hidden></div>
+    <input class="field-input" id="issVehicle" type="text" autocomplete="off" maxlength="20"
+      autocapitalize="characters" spellcheck="false" placeholder="Truck / trailer">
+  </div>
+  <div class="field">
     <label class="field-label eyebrow" for="issNote">Note (optional)</label>
     <textarea class="field-input" id="issNote" rows="2" maxlength="120"
       autocapitalize="sentences"></textarea>
@@ -517,7 +523,6 @@ import { configure, apiPost, ApiError, probe } from './lib/api.js';
 import { prefs, cacheMeta } from './lib/idb.js';
 import * as OB from './lib/outbox.js';
 import * as SY from './lib/sync.js';
-import { deltasFor } from './lib/deltas.js';
 
 /* ================= configuration ================= */
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn/exec';
@@ -537,6 +542,9 @@ const ui = {
   usersLoaded: false,      // distinguishes "no names" from "not loaded yet"
   sheetStack: []
 };
+
+// S03 sets this from the facility picker. Until then every projected figure reads 0.
+let uiFacility = '';
 
 /* ================= small helpers ================= */
 const n = v => new Intl.NumberFormat('en-US').format(v);
@@ -848,6 +856,10 @@ function matches(item, q) {
 }
 
 async function renderBalance() {
+  // S03: `rows` is one row per (facility, sku), so the same item at two yards
+  // renders as two visually identical lines with no yard label. Known and
+  // accepted for S02 — the fix (a yard chip on each row, or filtering to
+  // `uiFacility`) goes here once the picker exists.
   const rows = await SY.projected();
   const q = ui.balSearch.trim();
 
@@ -951,7 +963,7 @@ for (const o of $('balSorts').querySelectorAll('[data-sort]')) {
 /* ================= item detail ================= */
 async function openItemDetail(sku) {
   const item = SY.itemBySku(sku);
-  const b = await SY.projectedFor(sku);
+  const b = await SY.projectedFor(uiFacility, sku);
   openSheet({
     title: sku,
     body: `
@@ -990,6 +1002,9 @@ async function openItemDetail(sku) {
 async function loadMoves(sku) {
   const el = $('dtMoves');
   if (!el) return;
+  // S03: matched on the SKU alone, so the pending list shows entries queued
+  // at OTHER yards too. Harmless while there is one yard; add
+  // `&& i.facility === uiFacility` when the picker lands.
   const queued = (await OB.pendingItems()).filter(i => i.sku === sku);
   const localHtml = queued.map(i => `
     <div class="mv ${i.type === 'INBOUND' ? 'IN' : i.type === 'OUTBOUND' ? 'OUT' : 'DMG'}">
@@ -1037,7 +1052,16 @@ async function openPicker(target) {
   const paint = async () => {
     const q = ($('pkSearch')?.value || '').trim();
     const bals = await SY.projected();
-    const balOf = sku => bals.find(b => b.sku === sku) || { total:0, damaged:0, good:0 };
+    // Match on the YARD as well as the SKU. `projected()` has been one row per
+    // (facility, sku) since S02, sorted facility-then-sku, so a bare
+    // `.find(b => b.sku === sku)` returns whichever yard happens to sort
+    // FIRST: with YARD A holding 350 and YARD B holding 0, the picker opened
+    // at YARD B showed 350. A plausible number, never an error. Until S03
+    // wires the picker `uiFacility` is '' and this correctly shows nothing
+    // rather than another yard's stock.
+    const balOf = sku =>
+      bals.find(b => b.facility === uiFacility && b.sku === sku)
+      || { total:0, damaged:0, good:0 };
     const all = SY.state.items.filter(i => i.active !== false && matches(i, q));
 
     const rowHtml = i => {
@@ -1150,7 +1174,7 @@ async function paintReceive() {
   $('rcvUom').textContent = item ? `(${item.uom})` : '';
   const ctx = $('rcvCtx');
   if (item) {
-    const b = await SY.projectedFor(sku);
+    const b = await SY.projectedFor(uiFacility, sku);
     ctx.hidden = false;
     ctx.innerHTML = `In yard now — <b>${n(b.total)}</b> total · ✓ ${n(b.good)} good · ⚠ ${n(b.damaged)} damaged`;
   } else { ctx.hidden = true; }
@@ -1173,7 +1197,7 @@ async function paintReceive() {
 
   const pv = $('rcvPreview');
   if (item && qty !== null && qty >= 1 && dmg <= qty) {
-    const b = await SY.projectedFor(sku);
+    const b = await SY.projectedFor(uiFacility, sku);
     pv.hidden = false;
     pv.innerHTML = `
       <div class="line"><span>Receiving <b>${n(qty)}</b></span>
@@ -1240,7 +1264,7 @@ async function paintIssue() {
   const av = $('issAvail');
   let good = 0;
   if (item) {
-    const b = await SY.projectedFor(sku);
+    const b = await SY.projectedFor(uiFacility, sku);
     good = b.good;
     av.hidden = false;
     av.className = 'avail' + (good <= 0 ? ' zero' : '');
@@ -1271,7 +1295,7 @@ async function paintIssue() {
 
   const pv = $('issPreview');
   if (valid) {
-    const b = await SY.projectedFor(sku);
+    const b = await SY.projectedFor(uiFacility, sku);
     pv.hidden = false;
     pv.innerHTML = `<div class="line"><span>Left after this</span>
       <span><b>${n(b.good - qty)} good</b> · ${n(b.total - qty)} total</span></div>
@@ -1282,9 +1306,34 @@ async function paintIssue() {
   $('issSubmit').textContent = valid ? `Issue ${n(qty)} ${item.uom}` : 'Issue';
 };
 
+/**
+ * Recently-used vehicle numbers as one-tap chips. Renders nothing at all when
+ * the list is empty, so a first-time user never sees an empty grey strip.
+ */
+function renderVehicleChips() {
+  const box = $('issVehChips');
+  const list = prefs.getRecentVehicles();
+  box.hidden = !list.length;
+  box.innerHTML = list.map(v =>
+    `<button type="button" class="chip-add" data-veh="${esc(v)}">${esc(v)}</button>`).join('');
+  for (const b of box.querySelectorAll('[data-veh]')) {
+    b.onclick = () => { $('issVehicle').value = b.dataset.veh; };
+  }
+}
+renderVehicleChips();
+
+// Plates are recorded upper case everywhere, and the server uppercases anyway.
+// Doing it here as well keeps the recents list from filling with 'ab-1234' and
+// 'AB-1234' as two different trucks.
+$('issVehicle').oninput = e => {
+  const pos = e.target.selectionStart;
+  e.target.value = e.target.value.toUpperCase();
+  try { e.target.setSelectionRange(pos, pos); } catch { /* not selectable */ }
+};
+
 $('issAll').onclick = async () => {
   if (!ui.issSku) return;
-  const b = await SY.projectedFor(ui.issSku);
+  const b = await SY.projectedFor(uiFacility, ui.issSku);
   $('issQty').value = String(Math.max(0, b.good));
   paintIssue();
 };
@@ -1295,16 +1344,23 @@ $('issSubmit').onclick = async () => {
   if (!sku || qty === null || qty < 1) return;
   $('issSubmit').disabled = true;
 
+  const vehicleNo = $('issVehicle').value.trim().toUpperCase();
   const { settled } = await OB.enqueue({
     type: 'OUTBOUND', sku,
-    payload: { qty, condition: 'GOOD', refNo: $('issRef').value.trim(), remarks: $('issNote').value.trim() },
+    payload: {
+      qty, condition: 'GOOD', refNo: $('issRef').value.trim(),
+      vehicleNo, remarks: $('issNote').value.trim()
+    },
     recordedBy: prefs.getUser()
   });
+  if (vehicleNo) prefs.pushRecentVehicle(vehicleNo);
   buzz();
   const item = SY.itemBySku(sku);
-  const after = await SY.projectedFor(sku);
+  const after = await SY.projectedFor(uiFacility, sku);
   toast(`Issued ${n(qty)} ${item.uom} of ${sku}. ${n(after.good)} good left.`);
-  $('issQty').value = ''; $('issRef').value = ''; $('issNote').value = '';
+  $('issQty').value = ''; $('issRef').value = '';
+  $('issVehicle').value = ''; $('issNote').value = '';
+  renderVehicleChips();
   await paintIssue();
   await renderSync();
   settleInBackground(settled);
@@ -1314,7 +1370,7 @@ $('issSubmit').onclick = async () => {
 /* ================= S5 record damage ================= */
 async function openDamageSheet(sku) {
   const item = SY.itemBySku(sku);
-  const b = await SY.projectedFor(sku);
+  const b = await SY.projectedFor(uiFacility, sku);
   openSheet({
     title: 'Record damage',
     body: `
@@ -1489,7 +1545,7 @@ $('fabAddItem').onclick = () => openItemForm();
 
 async function openItemForm(existingSku, prefillSku) {
   const item = existingSku ? SY.itemBySku(existingSku) : null;
-  const bal = existingSku ? await SY.projectedFor(existingSku) : { total: 0, damaged: 0 };
+  const bal = existingSku ? await SY.projectedFor(uiFacility, existingSku) : { total: 0, damaged: 0 };
   const hasMoves = !!(existingSku && (bal.total !== 0 || bal.damaged !== 0));
 
   openSheet({

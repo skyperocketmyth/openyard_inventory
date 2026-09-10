@@ -18,9 +18,15 @@
  *   diff baseline.txt after.txt    # behaviour must be identical; only the
  *                                  # "calls:" lines should change
  *
- * It covers ~23 action paths including setup on an empty book, a missing Meta
+ * It covers 45 action paths including setup on an empty book, a missing Meta
  * tab, rebuildSnapshot, purgeTestData, voidTxn, duplicate-idem replay,
- * read_only, and an all-rejected batch.
+ * read_only, and an all-rejected batch — plus, since S02, the facilities tab,
+ * transfers, the opening-balance guard, the multi-key void, the three
+ * opening_done rebuild cases and the schema gate.
+ *
+ * THE ORDER OF THE run() LINES IS PART OF THE TOOL. A pre-existing scenario
+ * keeps its label, its position and its expression forever, so the diff stays
+ * readable. New scenarios go at the END of the file, never in the middle.
  *
  * It is a DIFF TOOL, not a pass/fail suite — it prints state and call counts
  * for a human (or an agent) to compare. `npm test` remains the assertion suite.
@@ -79,19 +85,33 @@ function fullBook(){
     Items:[['sku','description','uom','barcode','active','cb','ct','ub','ut','item_rev'],
            ['WIDGET-A','Widget A','PCS','',true,'x','t','x','t',1],
            ['WIDGET-B','Widget B','PCS','',true,'x','t','x','t',1]],
-    Ledger:[['txn_id','idem_key','txn_type','sku','qty','damaged_qty','condition','ref_no','location','remarks','recorded_by','client_ts','server_ts','device_id','app_version','void_of_txn_id','void_of_type'],
-            ['OY-ORIG1','idemorig1','INBOUND','WIDGET-A',40,3,'GOOD','R1','L1','','Harish','2026-09-01T00:00:00.000Z','2026-09-01T00:00:00.000Z','d','1.0.0','',''],
-            ['OY-ORIG2','idemorig2','DAMAGE','WIDGET-B',5,0,'','','','','Harish','2026-09-02T00:00:00.000Z','2026-09-02T00:00:00.000Z','d','1.0.0','','']],
+    // 20 columns since S02. The two rows keep their ids, quantities and
+    // timestamps exactly as they were — only the new facility/vehicle columns
+    // are added — so the diff against the pre-change baseline stays readable.
+    Ledger:[['txn_id','idem_key','txn_type','facility','to_facility','sku','qty','damaged_qty','condition','ref_no','vehicle_no','location','remarks','recorded_by','client_ts','server_ts','device_id','app_version','void_of_txn_id','void_of_type'],
+            ['OY-ORIG1','idemorig1','INBOUND','YARD A','','WIDGET-A',40,3,'GOOD','R1','','L1','','Harish','2026-09-01T00:00:00.000Z','2026-09-01T00:00:00.000Z','d','1.0.0','',''],
+            ['OY-ORIG2','idemorig2','DAMAGE','YARD A','','WIDGET-B',5,0,'','','','','','Harish','2026-09-02T00:00:00.000Z','2026-09-02T00:00:00.000Z','d','1.0.0','','']],
     Users:[['name','active','added_ts'],['Harish',true,'t'],['Old Hand',false,'t']],
-    Meta:[['key','value'],['schema_version',1],['ledger_epoch',7],['items_epoch',3],['read_only','FALSE']],
-    Balance_Snapshot:[['sku','total_qty','damaged_qty','good_qty','last_txn_ts','updated_ts'],
-                      ['WIDGET-A',40,3,37,'2026-09-01T00:00:00.000Z','t'],
-                      ['WIDGET-B',50,5,45,'2026-09-02T00:00:00.000Z','t']],
+    // schema_version is 2 since S02: the Ledger is 20 columns wide and the
+    // snapshot 8, and gas/ refuses to write to a book that still says 1.
+    // facilities_epoch is APPENDED after read_only so the `read_only blocks a
+    // write` scenario can keep addressing Meta[4].
+    Meta:[['key','value'],['schema_version',2],['ledger_epoch',7],['items_epoch',3],['read_only','FALSE'],['facilities_epoch',1]],
+    Balance_Snapshot:[['facility','sku','total_qty','damaged_qty','good_qty','opening_done','last_txn_ts','updated_ts'],
+                      ['YARD A','WIDGET-A',40,3,37,false,'2026-09-01T00:00:00.000Z','t'],
+                      ['YARD A','WIDGET-B',50,5,45,false,'2026-09-02T00:00:00.000Z','t']],
+    Facilities:[['facility','description','active','created_by','created_ts','facility_rev'],
+                ['YARD A','Main yard',true,'Harish','t',1],
+                ['YARD B','Overflow yard',true,'Harish','t',1],
+                ['YARD C','Closed yard',false,'Harish','t',1]],
     Rejections:[['server_ts','idem_key','recorded_by','device_id','payload_json','error_code','error_message']]
   };
 }
 
-function run(label, book, expr){
+// `extraTabs` echoes further tabs for THIS scenario only. Adding a tab to the
+// standard echo list below would put a new line under every scenario in the
+// file and bury the real differences.
+function run(label, book, expr, extraTabs){
   const calls=[]; const sheets={};
   for(const k in book) sheets[k]=makeSheet(k,book[k],calls);
   const ctx = {
@@ -116,8 +136,12 @@ function run(label, book, expr){
     + calls.filter(c=>/^(openById|getValues|setValues|setValue |appendRow)/.test(c)).length + ' round trips]');
   console.log(JSON.stringify(shown, null, 1));
   console.log('   tabs after: ' + JSON.stringify(Object.keys(book).map(k=>k+':'+book[k].length)));
+  // 6 wide, not 4: Balance_Snapshot's opening_done is column 6 and it has to
+  // be visible in the diff — a rebuild that blanks it is otherwise invisible.
   for(const k of ['Meta','Users','Balance_Snapshot'])
-    if(book[k]) console.log('   '+k+' = '+JSON.stringify(book[k].map(r=>r.slice(0,4))));
+    if(book[k]) console.log('   '+k+' = '+JSON.stringify(book[k].map(r=>r.slice(0,6))));
+  for(const k of (extraTabs||[]))
+    if(book[k]) console.log('   '+k+' = '+JSON.stringify(book[k]));
   console.log('   calls: '+JSON.stringify(calls));
   console.log('');
 }
@@ -143,10 +167,118 @@ run('purgeTestData', fullBook(), "purgeTestData_()");
 run('setup on a populated book', fullBook(), "ensureTabs_()");
 run('setup on an EMPTY book', {}, "ensureTabs_()");
 run('read_only blocks a write', (()=>{const b=fullBook(); b.Meta[4]=['read_only','TRUE']; return b;})(),
-    "submitTxnBatch_({txns:[{idemKey:'zzzzzzzz01',type:'INBOUND',sku:'WIDGET-A',qty:1,recordedBy:'Harish'}]})");
+    "submitTxnBatch_({txns:[{idemKey:'zzzzzzzz01',type:'INBOUND',facility:'YARD A',sku:'WIDGET-A',qty:1,recordedBy:'Harish'}]})");
 run('duplicate idem key replays', fullBook(),
-    "submitTxnBatch_({txns:[{idemKey:'idemorig1',type:'INBOUND',sku:'WIDGET-A',qty:40,damagedQty:3,recordedBy:'Harish'}]})");
+    "submitTxnBatch_({txns:[{idemKey:'idemorig1',type:'INBOUND',facility:'YARD A',sku:'WIDGET-A',qty:40,damagedQty:3,recordedBy:'Harish'}]})");
 run('all-rejected batch still replies balances', fullBook(),
-    "submitTxnBatch_({txns:[{idemKey:'yyyyyyyy01',type:'OUTBOUND',sku:'WIDGET-A',qty:9999,recordedBy:'Harish'}]})");
+    "submitTxnBatch_({txns:[{idemKey:'yyyyyyyy01',type:'OUTBOUND',facility:'YARD A',sku:'WIDGET-A',qty:9999,recordedBy:'Harish'}]})");
 run('missing Meta tab -> needsSetup', (()=>{const b=fullBook(); delete b.Meta; return b;})(),
     "doGet({parameter:{action:'ping'}})");
+
+/* =================================================================== *
+ * S02 — appended below this line. Everything above keeps its original
+ * label, position and expression so the diff against the pre-change
+ * baseline shows only the new columns and the new scenarios.
+ * =================================================================== */
+
+/** fullBook plus a committed TRANSFER of 10 WIDGET-A from YARD A to YARD B. */
+function transferBook(){
+  const b = fullBook();
+  b.Ledger.push(['OY-TRF1','idemtrf1','TRANSFER','YARD A','YARD B','WIDGET-A',10,0,'GOOD','','','','','Harish','2026-09-03T00:00:00.000Z','2026-09-03T00:00:00.000Z','d','1.0.0','','']);
+  b.Balance_Snapshot[1] = ['YARD A','WIDGET-A',30,3,27,false,'2026-09-03T00:00:00.000Z','t'];
+  b.Balance_Snapshot.push(['YARD B','WIDGET-A',10,0,10,false,'2026-09-03T00:00:00.000Z','t']);
+  return b;
+}
+
+/** fullBook with the opening balance already recorded for YARD A / WIDGET-A. */
+function openedBook(){
+  const b = fullBook();
+  b.Balance_Snapshot[1] = ['YARD A','WIDGET-A',40,3,37,true,'2026-09-01T00:00:00.000Z','t'];
+  return b;
+}
+
+run('getFacilities', fullBook(), "doGet({parameter:{action:'getFacilities'}})");
+run('upsertFacility create', fullBook(),
+    "upsertFacility_({facility:'YARD D',description:'New yard',recordedBy:'Harish'})", ['Facilities']);
+run('upsertFacility near-duplicate rejected', fullBook(),
+    "upsertFacility_({facility:'yard-a',description:'Should not be created',recordedBy:'Harish'})", ['Facilities']);
+run('upsertFacility rename attempt leaves the key alone', fullBook(),
+    "upsertFacility_({facility:'YARD A',description:'Main yard, north gate',recordedBy:'Harish'})", ['Facilities']);
+run('upsertFacility rejects a pipe in the name', fullBook(),
+    "upsertFacility_({facility:'YARD A | NORTH',description:'',recordedBy:'Harish'})", ['Facilities']);
+run('transfer A to B', fullBook(),
+    "submitTxnBatch_({txns:[{idemKey:'trf0000001',type:'TRANSFER',facility:'YARD A',toFacility:'YARD B',sku:'WIDGET-A',qty:10,recordedBy:'Harish'}]})",
+    ['Ledger']);
+run('transfer then issue at the destination in ONE batch', fullBook(),
+    "submitTxnBatch_({txns:[{idemKey:'trf0000002',type:'TRANSFER',facility:'YARD A',toFacility:'YARD B',sku:'WIDGET-A',qty:10,recordedBy:'Harish'},{idemKey:'trf0000003',type:'OUTBOUND',facility:'YARD B',sku:'WIDGET-A',qty:10,recordedBy:'Harish'}]})");
+run('transfer with too little at the source', fullBook(),
+    "submitTxnBatch_({txns:[{idemKey:'trf0000004',type:'TRANSFER',facility:'YARD A',toFacility:'YARD B',sku:'WIDGET-A',qty:9999,recordedBy:'Harish'}]})");
+run('voidTxn of a transfer', transferBook(),
+    "voidTxn_({txnId:'OY-TRF1',idemKey:'voidtrf1234',recordedBy:'Harish',reason:'wrong yard'})",
+    ['Ledger']);
+run('second OPENING at the same facility is refused', openedBook(),
+    "submitTxnBatch_({txns:[{idemKey:'opn0000001',type:'OPENING',facility:'YARD A',sku:'WIDGET-A',qty:100,recordedBy:'Harish'}]})");
+run('OPENING at a second facility for the same SKU is allowed', openedBook(),
+    "submitTxnBatch_({txns:[{idemKey:'opn0000002',type:'OPENING',facility:'YARD B',sku:'WIDGET-A',qty:100,recordedBy:'Harish'}]})");
+run('two OPENINGs for the same key in ONE batch — the second is refused', fullBook(),
+    "submitTxnBatch_({txns:[{idemKey:'opn0000003',type:'OPENING',facility:'YARD B',sku:'WIDGET-B',qty:100,recordedBy:'Harish'},{idemKey:'opn0000004',type:'OPENING',facility:'YARD B',sku:'WIDGET-B',qty:5,recordedBy:'Harish'}]})");
+run('entry with no facility is refused', fullBook(),
+    "submitTxnBatch_({txns:[{idemKey:'nofac00001',type:'INBOUND',sku:'WIDGET-A',qty:1,recordedBy:'Harish'}]})");
+run('entry to an inactive facility is accepted and flagged in remarks', fullBook(),
+    "submitTxnBatch_({txns:[{idemKey:'inact00001',type:'INBOUND',facility:'YARD C',sku:'WIDGET-A',qty:5,damagedQty:0,remarks:'from the gate',recordedBy:'Harish'}]})",
+    ['Ledger']);
+run('duplicate idem replay of a transfer returns BOTH balances', transferBook(),
+    "submitTxnBatch_({txns:[{idemKey:'idemtrf1',type:'TRANSFER',facility:'YARD A',toFacility:'YARD B',sku:'WIDGET-A',qty:10,recordedBy:'Harish'}]})");
+// A rebuild does not PRESERVE opening_done — it holds no prior snapshot to
+// preserve anything from. It DERIVES the flag by re-reading the ledger, and
+// the half that can actually go wrong is the VOID: a rule of "any key with an
+// OPENING row is done" passes the first scenario below and is wrong for the
+// other two. All three are here for that reason.
+run('rebuildSnapshot DERIVES opening_done from the ledger', (()=>{const b=fullBook();
+      b.Ledger.push(['OY-OPEN1','idemopen1','OPENING','YARD A','','WIDGET-C',100,0,'GOOD','','','','','Harish','2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z','d','1.0.0','','']);
+      return b;})(),
+    "rebuildSnapshot_()");
+run('rebuildSnapshot: an OPENING that was later VOIDED rebuilds to opening_done FALSE', (()=>{const b=fullBook();
+      b.Ledger.push(['OY-OPEN1','idemopen1','OPENING','YARD A','','WIDGET-C',100,0,'GOOD','','','','','Harish','2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z','d','1.0.0','','']);
+      b.Ledger.push(['OY-VOID1','idemvoid1','VOID','YARD A','','WIDGET-C',100,0,'GOOD','','','','Cancelled OY-OPEN1','Harish','2026-09-05T00:00:00.000Z','2026-09-05T00:00:00.000Z','d','1.0.0','OY-OPEN1','OPENING']);
+      return b;})(),
+    "rebuildSnapshot_()");
+run('rebuildSnapshot: OPENING then VOID then OPENING again rebuilds to opening_done TRUE', (()=>{const b=fullBook();
+      b.Ledger.push(['OY-OPEN1','idemopen1','OPENING','YARD A','','WIDGET-C',100,0,'GOOD','','','','','Harish','2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z','d','1.0.0','','']);
+      b.Ledger.push(['OY-VOID1','idemvoid1','VOID','YARD A','','WIDGET-C',100,0,'GOOD','','','','Cancelled OY-OPEN1','Harish','2026-09-05T00:00:00.000Z','2026-09-05T00:00:00.000Z','d','1.0.0','OY-OPEN1','OPENING']);
+      b.Ledger.push(['OY-OPEN2','idemopen2','OPENING','YARD A','','WIDGET-C',80,0,'GOOD','','','','','Harish','2026-09-06T00:00:00.000Z','2026-09-06T00:00:00.000Z','d','1.0.0','','']);
+      return b;})(),
+    "rebuildSnapshot_()");
+run('setup adds the Facilities tab to a populated book', (()=>{const b=fullBook(); delete b.Facilities; return b;})(),
+    "ensureTabs_()", ['Facilities']);
+
+/* ------------------------------------------------------------------- *
+ * The schema gate. gas/ refuses a write, and every column-sensitive
+ * read, unless the book says schema_version >= 2 AND the live Ledger
+ * header is the one the code expects. These two scenarios exist because
+ * that gate is now the only thing standing between this code and a
+ * ledger written down the wrong columns — and a gate nobody exercises
+ * is a gate nobody notices has stopped working.
+ * ------------------------------------------------------------------- */
+
+/** The book as it stands on the live Sheet TODAY: still schema_version 1. */
+function v1Book(){ const b = fullBook(); b.Meta[1] = ['schema_version',1]; return b; }
+
+/**
+ * Meta says 2 but the Ledger header is still the old S01 17-column shape —
+ * i.e. somebody bumped the number without running the migration. A version
+ * number must not be able to lie about the header, so this must ALSO refuse.
+ */
+function lyingHeaderBook(){
+  const b = fullBook();
+  b.Ledger = [['txn_id','idem_key','txn_type','sku','qty','damaged_qty','condition','ref_no','location','remarks','recorded_by','client_ts','server_ts','device_id','app_version','void_of_txn_id','void_of_type'],
+              ['OY-ORIG1','idemorig1','INBOUND','WIDGET-A',40,3,'GOOD','R1','L1','','Harish','2026-09-01T00:00:00.000Z','2026-09-01T00:00:00.000Z','d','1.0.0','','']];
+  return b;
+}
+
+run('schema_version 1 refuses a write, and the refusal is RETRYABLE', v1Book(),
+    "submitTxnBatch_({txns:[{idemKey:'schema00001',type:'INBOUND',facility:'YARD A',sku:'WIDGET-A',qty:1,damagedQty:0,recordedBy:'Harish'}]})",
+    ['Ledger']);
+run('Meta says 2 but the Ledger header is the OLD 17-column shape — still refused', lyingHeaderBook(),
+    "submitTxnBatch_({txns:[{idemKey:'schema00002',type:'INBOUND',facility:'YARD A',sku:'WIDGET-A',qty:1,damagedQty:0,recordedBy:'Harish'}]})",
+    ['Ledger']);

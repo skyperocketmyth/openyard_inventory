@@ -149,6 +149,12 @@ export async function enqueue(entry) {
     idemKey: newIdemKey(),
     type: entry.type,
     sku: String(entry.sku || '').trim().toUpperCase(),
+    // Top level, NOT inside `payload`: the txns mapper below reads them
+    // directly, and the head-of-line `blocked` set is re-keyed onto
+    // (facility, sku) next — it still keys on `sku` alone today, which blocks
+    // an entry at YARD B behind an unrelated failure at YARD A.
+    facility: String(entry.facility || '').trim().toUpperCase(),
+    toFacility: String(entry.toFacility || '').trim().toUpperCase(),
     payload: entry.payload || {},
     recordedBy: entry.recordedBy || prefs.getUser() || '',
     clientTs: new Date().toISOString(),
@@ -212,10 +218,16 @@ export async function flush() {
           idemKey: it.idemKey,
           type: it.type,
           sku: it.sku,
+          // Without these the server sees no facility on any entry and every
+          // one of them comes back UNKNOWN_FACILITY. The record carries them,
+          // but nothing was putting them on the wire.
+          facility: it.facility || '',
+          toFacility: it.toFacility || '',
           qty: it.payload.qty,
           damagedQty: it.payload.damagedQty || 0,
           condition: it.payload.condition || '',
           refNo: it.payload.refNo || '',
+          vehicleNo: it.payload.vehicleNo || '',
           location: it.payload.location || '',
           remarks: it.payload.remarks || '',
           recordedBy: it.recordedBy,
@@ -325,6 +337,8 @@ export async function retryFailed(seq, patch = {}) {
     idemKey: newIdemKey(),
     type: patch.type || it.type,
     sku: patch.sku || it.sku,
+    facility: patch.facility || it.facility || '',
+    toFacility: patch.toFacility || it.toFacility || '',
     payload: { ...it.payload, ...(patch.payload || {}) },
     recordedBy: it.recordedBy,
     clientTs: new Date().toISOString(),

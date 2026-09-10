@@ -11,6 +11,11 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const problems = [];
+// A blocker is NOT a defect. It is unfinished work that would be unsafe to push
+// yet — reported separately so "the gate is red" can be read at a glance as
+// either "something is broken" or "this stage is not finished". Both still stop
+// a push; conflating them is how a real fault hides behind an expected one.
+const blockers = [];
 const notes = [];
 const firstLines = (s, n) =>
   String(s).split(/\r?\n/).filter(Boolean).slice(0, n).join(' | ');
@@ -44,10 +49,16 @@ if (!/function\s+doPost\s*\(/.test(code)) problems.push('gas/Code.js defines no 
 if (!/function\s+doGet\s*\(/.test(code)) problems.push('gas/Code.js defines no doGet()');
 
 /* 3. the delta contract must still agree across both halves --------------- */
+// This list is a SECOND copy of package.json's "test" script, and the two must
+// stay in step by hand. Adding a test file to package.json alone leaves it out
+// of the gate, which is how test/validate.test.mjs — the only coverage the
+// negative-stock guard has ever had — nearly shipped unenforced.
 try {
   execFileSync(process.execPath,
-    ['--test', 'test/deltas.test.mjs', 'test/sync.test.mjs'], { stdio: 'pipe' });
-  notes.push('unit tests pass (client + server delta lists agree, adoption gate holds)');
+    ['--test', 'test/deltas.test.mjs', 'test/sync.test.mjs', 'test/validate.test.mjs',
+      'test/ledger-roundtrip.test.mjs'],
+    { stdio: 'pipe' });
+  notes.push('unit tests pass (client + server delta lists agree, adoption gate holds, validateTxn_ still refuses negative stock, a written ledger row still lines up with its header)');
 } catch {
   problems.push('unit tests FAILED — run `npm test`. The client and server balance maths may have drifted.');
 }
@@ -154,11 +165,44 @@ if (!scriptUrl || !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(s
   }
 }
 
+/* 10. gas/ must not require a warehouse before the app can supply one ----- */
+// This one is here because the ONLY thing standing between this branch and a
+// yard-wide outage is a human remembering the deploy order.
+//
+// The server now refuses any entry that arrives with no warehouse on it
+// (UNKNOWN_FACILITY, gas/Ledger.js). The app cannot put a warehouse on an
+// entry until S03 ships the picker — until then `uiFacility` is a fixed empty
+// string that nothing ever sets. Push gas/ while that is still true and every
+// single entry the yard records is rejected, permanently and immediately.
+//
+// It clears itself: the moment S03 assigns to `uiFacility` anywhere in
+// docs/index.html, or replaces the empty-string stub with a real initialiser,
+// this check goes quiet. No flag to remember, no date to expire.
+const ledgerSrc = existsSync('gas/Ledger.js') ? readFileSync('gas/Ledger.js', 'utf8') : '';
+if (/UNKNOWN_FACILITY/.test(ledgerSrc) && html) {
+  const assigns = (html.match(/\buiFacility\s*\+?=(?!=)/g) || []).length;
+  const declares = (html.match(/\b(?:let|const|var)\s+uiFacility\s*=(?!=)/g) || []).length;
+  const stillAStub = /\blet\s+uiFacility\s*=\s*''\s*;/.test(html);
+  if (stillAStub && assigns - declares <= 0) {
+    blockers.push(
+      'the warehouse picker is not wired up yet. gas/Ledger.js already refuses any entry '
+      + 'that arrives without a warehouse, but docs/index.html still has uiFacility fixed at '
+      + "'' and nothing anywhere sets it — so if you push gas/ now, every entry the yard "
+      + 'records will be rejected. Finish S03 (make the picker set uiFacility) before pushing.');
+  } else {
+    notes.push('the app supplies a warehouse on every entry, so the server may require one');
+  }
+}
+
 /* ------------------------------------------------------------------------ */
 for (const nt of notes) console.log(`  ok   ${nt}`);
 if (problems.length) {
   console.error('\nPRE-PUSH GATE FAILED:');
   for (const p of problems) console.error(`  FAIL ${p}`);
-  process.exit(1);
 }
+if (blockers.length) {
+  console.error('\nNOT READY TO PUSH — nothing is broken, this work is unfinished:');
+  for (const b of blockers) console.error(`  WAIT ${b}`);
+}
+if (problems.length || blockers.length) process.exit(1);
 console.log('\nPre-push gate passed.');

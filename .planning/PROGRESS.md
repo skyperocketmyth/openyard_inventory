@@ -1,12 +1,12 @@
 # Open Yard Inventory — Active Progress
 
-Last updated: 2026-09-10 (S01 shipped)
+Last updated: 2026-09-10 (S02 built, on a branch, not merged)
 Active wave: Speed, then warehouses
 
-## Overall  █░░░  1/4 sessions
+## Overall  ██░░  2/4 sessions
 
 ## Phase 0 — Performance & correctness      █  1/1
-## Phase 1 — Vehicle no. + facility model   ░  0/1
+## Phase 1 — Vehicle no. + facility model   █  1/1
 ## Phase 2 — Facility UI + transfers        ░  0/1
 ## Phase 3 — Migration + live verification  ░  0/1
 
@@ -39,7 +39,7 @@ vehicle number, and every screen responds without waiting on the network.
 ### Session checklist
 
 [x] S01  Speed + the reverting-stock bug                  [Opus 1M · plan: NO  · teams: YES — 1 builder + 2 reviewers]
-[ ] S02  Vehicle number + facility data model & server    [Opus 1M · plan: NO  · teams: YES — Builder×2 + Verifier]
+[x] S02  Vehicle number + facility data model & server    [Opus 1M · plan: NO  · teams: YES — Builder×3 + Critic×2 + Fix×2]
 [ ] S03  Facility UI + transfers                          [Opus 1M · plan: NO  · teams: YES — Builder×2 + Critic]
 [ ] S04  Migration wipe + full live verification          [Opus 1M · plan: NO  · teams: YES — Verifier×2]
 
@@ -106,6 +106,90 @@ Bundle:
 - Add the `validateTxn_` unit test it has never had (X1).
 
 DO NOT in S02: deploy, wipe, or touch `migrateToV2`.
+
+---
+
+## S02 — built 2026-09-10 on branch `feat/s02-facilities-server` (NOT merged, NOT deployed)
+
+Ship: the harness diffs clean against the S01 baseline, the composite-key server logic is
+unit-tested, nothing deployed, no data wiped.
+
+**Why it is on a branch.** GitHub Pages serves `docs/` off `main`. S02 changes the client data
+layer but S03 owns the warehouse picker, so a merge to `main` today would put a client on
+Harish's phone that shows zero stock and cannot record anything. Nothing merges until S03 and
+S04 are done.
+
+Built: `Facilities` tab + `facilities_epoch` + `getFacilities` + `upsertFacility_` (immutable
+key, near-duplicate fold, no rename, no delete) · `H_LEDGER` 17→20 and `H_SNAP` 6→8 with EVERY
+positional read re-derived from the header · `deltasFor` returning a list of per-facility
+deltas in all three copies · composite `FACILITY|SKU` key throughout · `opening_done` with all
+four X5 fixes · TRANSFER server-side · vehicle number end to end.
+
+Verified: 71/71 unit (was 17) · harness 45 scenarios, exit 0 · 200,000-case differential fuzz
+between the server and client copies of `deltasFor`, zero divergence · `grep` for magic column
+indexes and for key-splitting both empty. The harness diff against the S01 baseline shows NO
+change to any quantity, status, error code, retryable flag or epoch.
+
+### Found by review, fixed here — none of these were in PLAN.md
+
+- **No schema gate.** The columns moved, but nothing stopped this code running against the
+  un-migrated Sheet: `facility` would read the old `sku`, and a 20-cell append SUCCEEDS into a
+  17-column tab because a Sheets grid is 26 wide. Silent two-shape corruption of an append-only
+  ledger. Now `assertSchema_` checks both `schema_version >= 2` AND the live header row by name,
+  and refuses **retryably** so phones hold their entries instead of filing them as failures.
+  Gated at the route AND inside each write function — the harness and the Apps Script editor
+  call those directly, bypassing `route_`.
+- **`VOID` was an accepted batch type with no validation.** `/exec` is `ANYONE_ANONYMOUS`, so a
+  hand-written POST could delete a unit of stock and clear `opening_done` — re-opening the very
+  guard S02 built. `VOID` is out of `TYPES_ALL`; cancellations go through `voidTxn_`, which has
+  the real checks. This also closed a VOID-of-TRANSFER path that skipped every destination check
+  and could invent stock at one yard while destroying it at another.
+- **The batch echoed the caller's `void_of_txn_id` into the row.** `voidTxn_` decides
+  ALREADY_VOIDED by scanning that column, so a crafted entry naming a real txn id would
+  permanently block that entry from ever being cancelled. Now always written blank.
+- **Twin-file drift, in the function whose whole purpose is not to drift.** Server `foldDeltas_`
+  used `normSku_`; client used `String(t.sku || '')`. A SKU of `0` made a row on the server and
+  was DROPPED on the client. This project has live numeric SKUs. Same bug in `mergeBalances`,
+  `projectedFor`, `itemBySku` and `facilityByName`.
+- **The client balance cache was not versioned** while the server's was. A stale S01 row has no
+  facility, `balKey(undefined,'X')` is `'|X'`, and `uiFacility` is `''` — so the app would have
+  shown last week's number as this yard's current stock, confidently. Cache key is now
+  `balances_v2`.
+- `active: null` silently deactivated a yard (and an item) — the `e6b8cd8` reactivation bug in
+  reverse. `upsertFacility_`'s charset was widened: it rejected `JEBEL ALI (SOUTH)` and
+  `DP WORLD, JAFZA`, having inherited a restriction that only ever belonged to a Node test
+  harness — on a field decision 9.A says can NEVER be renamed. `|` is still rejected.
+- Item picker read whichever yard sorted first, so it would show 350 at a yard holding 0.
+
+### New guard rails
+
+- `test/ledger-roundtrip.test.mjs` — appends a row and reads it back through `getLedgerRead_`
+  and `snapshotMap_`, asserting every field. Two 20-slot positional literals had NO coverage;
+  a future slot swap now fails loudly instead of returning a neighbouring cell.
+- `test/validate.test.mjs` — `validateTxn_` had never had a single test, and it holds the guard
+  that stops stock going negative. Its X1 canaries are built to FAIL if the per-entry loop is
+  removed.
+- Pre-push check 10 — refuses a push while the server requires a warehouse and the app cannot
+  supply one. Self-clearing: it goes quiet the moment S03 assigns to `uiFacility`. Deliberate
+  blocks now print as **WAIT** (unfinished) rather than **FAIL** (broken), so a real fault
+  cannot hide behind an expected one.
+
+### Carry into S03
+
+- `uiFacility` in `docs/index.html` is the single seam: declared at ~`:547`, threaded through
+  nine `projectedFor` call sites. Wiring the picker to set it clears pre-push check 10.
+- `docs/index.html` still renders the stock list keyed on SKU alone, so two yards holding one
+  item show as duplicate unlabelled rows. Marked `// S03:` in place, along with `loadMoves`.
+- `blocked` in `docs/lib/outbox.js` is still unpopulated (X10), as planned.
+
+### Carry into S04 — read this before writing `migrateToV2`
+
+- `migrateToV2` must set `schema_version = 2` **after** widening the headers. The gate checks
+  the header row as well as the number, so setting the number first just locks you out.
+- `rebuildSnapshot_` derives `opening_done` **solely** from OPENING rows in the ledger. If
+  `migrateToV2` sets the flag without synthesising matching OPENING rows, one
+  `action=rebuildSnapshot` — which is routed unauthenticated — silently re-opens every one.
+- Warehouse names are permanent. There is no rename, ever (9.A).
 
 ---
 

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Open Yard Inventory - installable no-login PWA over an Apps Script/Google Sheet backend",
   "scripts": {
-    "test": "node --test test/deltas.test.mjs test/sync.test.mjs",
+    "test": "node --test test/deltas.test.mjs test/sync.test.mjs test/validate.test.mjs test/ledger-roundtrip.test.mjs",
     "gate": "node scripts/prepush-gate.mjs",
     "push": "npm run gate && clasp push --force",
     "_deploy_note": "NEVER use clasp create-deployment. A new deployment changes the /exec URL and breaks SCRIPT_URL in every installed phone. Redeploy into the existing id only.",

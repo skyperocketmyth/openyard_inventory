@@ -14,7 +14,7 @@
 import { cacheGet, cacheSet, prefs } from './idb.js';
 import { apiGet, ApiError } from './api.js';
 import { pendingCount, pendingItems, flush, outboxVersion } from './outbox.js';
-import { projectBalances } from './deltas.js';
+import { projectBalances, balKey, normSku, normFacility } from './deltas.js';
 
 /**
  * Bumped every time `state.balances` is replaced. Half of the projection's
@@ -29,6 +29,28 @@ import { projectBalances } from './deltas.js';
  */
 let balancesVersion = 0;
 function bumpBalances() { balancesVersion += 1; }
+
+/**
+ * The cache key for the last-known SERVER balance rows.
+ *
+ * v2, and the version is the whole point. In S02 the row SHAPE changed: a
+ * balance is now one row per (facility, sku) and carries `facility`. A v1 blob
+ * restored under the new reader is worse than having no cache at all —
+ * `balKey(undefined, 'X')` is '|X', and `uiFacility` is '' until S03 wires the
+ * picker, so `projectedFor('', sku)` looks up '|X' and HITS last week's
+ * pre-facility figure. The app would then show that number as this yard's
+ * current stock, confidently and with no error, until a getBalances happened
+ * to come back with a changed epoch.
+ *
+ * Changing the key is the same move the server made for its own cache
+ * ('oy_bal_v2_' in readBalances_), and for the same reason. Bumping
+ * DB_VERSION in idb.js would NOT have done it — an IndexedDB upgrade only
+ * creates missing stores, it does not discard what is in them.
+ *
+ * S04 (PLAN A7) replaces this with a schema-version-driven cache clear that
+ * handles every key at once. This closes the specific hole that exists now.
+ */
+const BALANCES_CACHE_KEY = 'balances_v2';
 
 /**
  * @param {number} pendingBefore count taken immediately BEFORE issuing the read
@@ -50,10 +72,12 @@ export function canAdoptServerSnapshot(pendingBefore, pendingAfter) {
 export const state = {
   items: [],
   users: [],
+  facilities: [],     // reference data, same status as items
   balances: [],       // last known SERVER figures, never the projected ones
   uoms: ['PCS', 'KG', 'MT', 'BAG', 'BUNDLE', 'CBM', 'ROLL', 'LTR'],
   epoch: 0,
   itemsEpoch: 0,
+  facilitiesEpoch: 0,
   lastSyncTs: null,
   lastError: null,
   // Guarded so this module can be imported in Node for unit tests.
@@ -61,15 +85,18 @@ export const state = {
 };
 
 export async function loadFromCache() {
-  const [items, users, balances, meta] = await Promise.all([
-    cacheGet('items'), cacheGet('users'), cacheGet('balances'), cacheGet('meta')
+  const [items, users, facilities, balances, meta] = await Promise.all([
+    cacheGet('items'), cacheGet('users'), cacheGet('facilities'),
+    cacheGet(BALANCES_CACHE_KEY), cacheGet('meta')
   ]);
   if (items) state.items = items;
   if (users) state.users = users;
+  if (facilities) state.facilities = facilities;
   if (balances) { state.balances = balances; bumpBalances(); }
   if (meta) {
     state.epoch = meta.epoch || 0;
     state.itemsEpoch = meta.itemsEpoch || 0;
+    state.facilitiesEpoch = meta.facilitiesEpoch || 0;
     state.lastSyncTs = meta.lastSyncTs || null;
   }
   return state;
@@ -79,10 +106,12 @@ async function persist() {
   await Promise.all([
     cacheSet('items', state.items),
     cacheSet('users', state.users),
-    cacheSet('balances', state.balances),
+    cacheSet('facilities', state.facilities),
+    cacheSet(BALANCES_CACHE_KEY, state.balances),
     cacheSet('meta', {
       epoch: state.epoch,
       itemsEpoch: state.itemsEpoch,
+      facilitiesEpoch: state.facilitiesEpoch,
       lastSyncTs: state.lastSyncTs
     })
   ]);
@@ -95,16 +124,22 @@ async function persist() {
  */
 export async function mergeBalances(rows) {
   if (!rows || !rows.length) return;
-  const map = new Map(state.balances.map(b => [String(b.sku).toUpperCase(), b]));
+  // Keyed FACILITY|SKU. The same item at two yards is two independent rows,
+  // and a write response naming one of them must not overwrite the other.
+  const map = new Map(state.balances.map(b => [balKey(b.facility, b.sku), b]));
   for (const r of rows) {
-    map.set(String(r.sku).toUpperCase(), {
-      sku: String(r.sku).toUpperCase(),
+    map.set(balKey(r.facility, r.sku), {
+      // normSku/normFacility, never String(x || '') — a SKU of 0 is real here.
+      facility: normFacility(r.facility),
+      sku: normSku(r.sku),
       total: Number(r.total) || 0,
       damaged: Number(r.damaged) || 0,
       lastTxnTs: r.lastTxnTs || ''
     });
   }
-  state.balances = [...map.values()].sort((a, b) => (a.sku < b.sku ? -1 : 1));
+  state.balances = [...map.values()].sort((a, b) =>
+    a.facility < b.facility ? -1 : a.facility > b.facility ? 1
+      : a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0);
   bumpBalances();
   state.lastSyncTs = new Date().toISOString();
   await persist();
@@ -123,11 +158,14 @@ export async function bootstrap() {
 
   state.users = d.users || [];
   state.items = d.items || [];
+  state.facilities = d.facilities || [];
   state.itemsEpoch = (d.meta && d.meta.itemsEpoch) || 0;
+  state.facilitiesEpoch = (d.meta && d.meta.facilitiesEpoch) || 0;
   state.epoch = (d.meta && d.meta.epoch) || 0;
   if (d.meta && d.meta.uoms) state.uoms = d.meta.uoms;
 
-  // Items and users are reference data — safe to adopt unconditionally.
+  // Items, users and facilities are reference data — safe to adopt
+  // unconditionally.
   // Balances are the contested resource, so they go through the gate.
   if (canAdoptServerSnapshot(before, after)) {
     state.balances = d.balances || [];
@@ -180,6 +218,20 @@ export async function refreshItems() {
 }
 
 /**
+ * The same shape as `refreshItems`, and deliberately outside the adoption
+ * gate: a pending write can only change a BALANCE, never the list of yards.
+ */
+export async function refreshFacilities() {
+  const res = await apiGet('getFacilities', { sinceEpoch: String(state.facilitiesEpoch) });
+  const d = res.data || {};
+  if (d.unchanged) return { unchanged: true };
+  state.facilities = d.facilities || [];
+  state.facilitiesEpoch = d.facilitiesEpoch || state.facilitiesEpoch;
+  await persist();
+  return { unchanged: false };
+}
+
+/**
  * Pull-to-refresh. SEND THEN READ, deliberately.
  *
  * Reading first would report the state from before the pending write — which is
@@ -197,6 +249,7 @@ export async function manualRefresh() {
   try {
     await refreshBalances();
     await refreshItems();
+    await refreshFacilities();
     state.lastError = null;
   } catch (err) {
     state.lastError = err instanceof ApiError ? err : new ApiError('UNKNOWN', String(err), true);
@@ -221,7 +274,7 @@ export async function manualRefresh() {
  * The cache key is (outbox version, balances version) and both halves matter —
  * see the note on `balancesVersion` above.
  */
-let memo = { key: '', rows: null, bySku: null };
+let memo = { key: '', rows: null, byKey: null };
 
 export async function projected() {
   const key = outboxVersion() + ':' + balancesVersion;
@@ -232,19 +285,26 @@ export async function projected() {
 
   // The index is built here rather than on demand so that `projectedFor` is a
   // map lookup: the quantity fields call it on every keystroke.
-  const bySku = new Map(rows.map(r => [r.sku, r]));
-  memo = { key, rows, bySku };
+  const byKey = new Map(rows.map(r => [balKey(r.facility, r.sku), r]));
+  memo = { key, rows, byKey };
   return rows;
 }
 
-export async function projectedFor(sku) {
-  const key = String(sku || '').trim().toUpperCase();
+/** One yard's figure for one item. A key with no row is zeros, never undefined. */
+export async function projectedFor(facility, sku) {
+  const fac = normFacility(facility);
+  const key = normSku(sku);
   await projected();                       // fills the memo, cheap when warm
-  return memo.bySku.get(key)
-    || { sku: key, total: 0, damaged: 0, good: 0, pending: 0 };
+  return memo.byKey.get(balKey(fac, key))
+    || { facility: fac, sku: key, total: 0, damaged: 0, good: 0, pending: 0 };
 }
 
 export function itemBySku(sku) {
-  const key = String(sku || '').trim().toUpperCase();
+  const key = normSku(sku);
   return state.items.find(i => i.sku === key) || null;
+}
+
+export function facilityByName(name) {
+  const key = normFacility(name);
+  return state.facilities.find(f => f.facility === key) || null;
 }
