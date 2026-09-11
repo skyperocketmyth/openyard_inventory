@@ -185,10 +185,10 @@ try {
     // is the whole of the cleanup — and it is what keeps it out of the real
     // picker until the next run reopens it.
     const facs = await get('getFacilities');
-    const cur = (facs.data.facilities || []).find(f => f.facility === FAC);
-    if (cur) {
+    const curFac = (facs.data.facilities || []).find(f => f.facility === FAC);
+    if (curFac) {
       await post('upsertFacility', {
-        facility: FAC, active: false, rev: cur.rev, recordedBy: USER
+        facility: FAC, active: false, rev: curFac.rev, recordedBy: USER
       });
     }
     const closed = await get('getFacilities');

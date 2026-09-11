@@ -5,7 +5,7 @@
  * on this project or a previous one. None of them are hypothetical.
  */
 
-import { readFileSync, existsSync, writeFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -114,6 +114,22 @@ if (!html) {
       execFileSync(process.execPath, ['--check', path], { stdio: 'pipe' });
     } catch (err) {
       problems.push(`${path} has a SYNTAX ERROR: ${firstLines(err.stderr || err.message, 2)}`);
+    }
+  }
+
+  /* 5b. and so must the tooling in scripts/ -------------------------------- */
+  // The scripts are how a deploy is verified, so a syntax error in one is
+  // found at the worst possible moment: mid-migration, with the yard's data
+  // half-moved, where it reads as the migration having broken something.
+  // Exactly that happened in S04 — a duplicate `const` in the live numeric-code
+  // check, which only runs against a real deployment and so could not fail
+  // until the one moment it was needed.
+  for (const f of readdirSync('scripts')) {
+    if (!/\.(mjs|cjs|js)$/.test(f)) continue;
+    try {
+      execFileSync(process.execPath, ['--check', join('scripts', f)], { stdio: 'pipe' });
+    } catch (err) {
+      problems.push(`scripts/${f} has a SYNTAX ERROR: ${firstLines(err.stderr || err.message, 2)}`);
     }
   }
 

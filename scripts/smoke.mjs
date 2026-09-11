@@ -45,12 +45,31 @@ function uuid() {
   return 'smoke_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Reads retry on a non-JSON reply.
+ *
+ * Apps Script intermittently serves one of Google's own HTML pages at HTTP 200
+ * instead of answering — it is the documented reason the app classifies
+ * non-JSON as RETRYABLE rather than throwing, and the reason nothing here ever
+ * asserts on a status code. Without this a flake in the transport is reported
+ * as a failed assertion, which reads exactly like a server regression and has
+ * cost this project a session before.
+ *
+ * Only reads. A write must never be replayed on a guess — that is what the
+ * idempotency key is for, and those calls are made once, deliberately.
+ */
 async function get(action, params = {}) {
   const q = new URLSearchParams({ action, ...params });
-  const r = await fetch(`${EXEC}?${q}`, { redirect: 'follow' });
-  const text = await r.text();
-  try { return JSON.parse(text); }
-  catch { throw new Error(`non-JSON reply for ${action}: ${text.slice(0, 200)}`); }
+  let last = '';
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await sleep(1500 * attempt);
+    const r = await fetch(`${EXEC}?${q}`, { redirect: 'follow' });
+    last = await r.text();
+    try { return JSON.parse(last); } catch { /* HTML error page — try again */ }
+  }
+  throw new Error(`non-JSON reply for ${action} after 4 tries: ${last.slice(0, 200)}`);
 }
 
 async function post(action, payload) {
