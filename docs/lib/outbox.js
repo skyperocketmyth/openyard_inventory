@@ -416,10 +416,79 @@ function scheduleRetry(attempt) {
  * Failure handling — a rejected entry must never just vanish
  * ------------------------------------------------------------------ */
 
+/**
+ * The one failure a retry can never fix. PLAN A7.
+ *
+ * An entry queued by the pre-warehouse build carries no warehouse, and there
+ * is nowhere to put one: `retryFailed` copies the old payload forward, so a
+ * "Try again" button on one of these is an infinite re-rejection loop — the
+ * server answers UNKNOWN_FACILITY, it lands back in failures, and the user
+ * taps it again. The entry has to be re-recorded against a real warehouse and
+ * this one discarded, so Discard is the only honest button to offer.
+ */
+export const NEEDS_WAREHOUSE = 'NEEDS_WAREHOUSE';
+
+/** Does this entry name every warehouse its type requires? */
+function hasWarehouses(it) {
+  const from = normFacility(it.facility ?? it.payload?.facility ?? '');
+  if (!from) return false;
+  if (String(it.type || '').toUpperCase() !== 'TRANSFER') return true;
+  return !!normFacility(it.toFacility ?? it.payload?.toFacility ?? '');
+}
+
+/**
+ * Move any entry queued before warehouses existed out of the queue.
+ *
+ * Run at startup, unconditionally rather than only on a schema change. Every
+ * enqueue path in the app now refuses to queue an entry without a warehouse,
+ * so anything in here missing one can only have come from the old build — and
+ * keying this on the schema version instead would miss the phone whose cached
+ * meta was lost, which is precisely the phone in the worst state.
+ *
+ * Left in the queue these are not harmless: `flush` sends them on every
+ * enqueue, every poll and every visibilitychange, each one a rejected batch
+ * entry, and the head-of-line rule then holds back the good entries queued
+ * behind them at the same item.
+ *
+ * @return {Promise<number>} how many were moved
+ */
+export async function drainPreWarehouseEntries() {
+  const queue = await pendingItems();
+  let moved = 0;
+  for (const it of queue) {
+    if (hasWarehouses(it)) continue;
+    await idb.put(STORE_FAILURES, {
+      ...it,
+      status: 'failed',
+      // Read by the failures sheet to drop the "Try again" button. A flag on
+      // the record, not a check on the code string, so a future failure of the
+      // same kind only has to set it.
+      noRetry: true,
+      error: {
+        code: NEEDS_WAREHOUSE,
+        message: 'This entry was saved before the app tracked warehouses, so it '
+          + 'does not say which yard it happened at. Record it again against the '
+          + 'right warehouse, then discard this one.',
+        retryable: false
+      },
+      failedTs: new Date().toISOString()
+    });
+    await idb.del(STORE_OUTBOX, it.seq);
+    moved += 1;
+  }
+  if (moved) emit();
+  return moved;
+}
+
 /** Put a failed entry back in the queue with a NEW key (the old one may have committed). */
 export async function retryFailed(seq, patch = {}) {
   const it = await idb.get(STORE_FAILURES, seq);
   if (!it) return null;
+  // Belt and braces against the UI. The failures sheet does not draw a retry
+  // button for these, but re-queueing one would send it straight back to
+  // failures on the next flush, and the user would have no way to tell that
+  // their tap did nothing.
+  if (it.noRetry && !patch.facility) return null;
   const rec = {
     idemKey: newIdemKey(),
     type: patch.type || it.type,

@@ -11,7 +11,7 @@
  * condition precisely because its absence is invisible in review.
  */
 
-import { cacheGet, cacheSet, prefs } from './idb.js';
+import { cacheGet, cacheSet, prefs, idb, STORE_CACHE } from './idb.js';
 import { apiGet, ApiError } from './api.js';
 import { pendingCount, pendingItems, flush, outboxVersion } from './outbox.js';
 import { projectBalances, balKey, normSku, normFacility } from './deltas.js';
@@ -47,10 +47,39 @@ function bumpBalances() { balancesVersion += 1; }
  * DB_VERSION in idb.js would NOT have done it — an IndexedDB upgrade only
  * creates missing stores, it does not discard what is in them.
  *
- * S04 (PLAN A7) replaces this with a schema-version-driven cache clear that
- * handles every key at once. This closes the specific hole that exists now.
+ * It is kept alongside the schema-version clear below rather than replaced by
+ * it. The two catch different things: the key protects against a blob of the
+ * WRONG SHAPE being read at all, which is a client-side coding error and needs
+ * no server contact; the version clear handles a server whose data model has
+ * moved under a phone that was working fine a minute ago.
  */
 const BALANCES_CACHE_KEY = 'balances_v2';
+
+/**
+ * Drop every cached server snapshot on this device.
+ *
+ * Called when the SERVER's schema version goes up (PLAN A7). After the S04
+ * migration the Sheet's stock history is gone and every balance is keyed by
+ * warehouse, so a phone still holding the pre-migration rows would render
+ * deleted numbers as current stock — the figures come from cache before any
+ * network call, so it would do it instantly on launch and keep doing it until
+ * a read happened to land.
+ *
+ * Only the CACHE store is touched. The outbox and the failures list are a
+ * different store entirely and hold work the user has done that has not
+ * reached the server — those are never cleared by anything automatic.
+ */
+async function clearCachedServerState() {
+  await idb.clear(STORE_CACHE);
+  state.items = [];
+  state.users = [];
+  state.facilities = [];
+  state.balances = [];
+  state.epoch = 0;
+  state.itemsEpoch = 0;
+  state.facilitiesEpoch = 0;
+  bumpBalances();
+}
 
 /**
  * @param {number} pendingBefore count taken immediately BEFORE issuing the read
@@ -78,6 +107,10 @@ export const state = {
   epoch: 0,
   itemsEpoch: 0,
   facilitiesEpoch: 0,
+  // The SERVER's data-model version, as last seen. 0 means "never been told",
+  // which is what a phone running the pre-S04 build has stored — the server
+  // has always returned this field and the client has always thrown it away.
+  schemaVersion: 0,
   lastSyncTs: null,
   lastError: null,
   // Guarded so this module can be imported in Node for unit tests.
@@ -97,6 +130,7 @@ export async function loadFromCache() {
     state.epoch = meta.epoch || 0;
     state.itemsEpoch = meta.itemsEpoch || 0;
     state.facilitiesEpoch = meta.facilitiesEpoch || 0;
+    state.schemaVersion = meta.schemaVersion || 0;
     state.lastSyncTs = meta.lastSyncTs || null;
   }
   return state;
@@ -112,6 +146,10 @@ async function persist() {
       epoch: state.epoch,
       itemsEpoch: state.itemsEpoch,
       facilitiesEpoch: state.facilitiesEpoch,
+      // Stored, not just read. Without this the comparison in `bootstrap` has
+      // nothing to compare against and the cache clear either never fires or
+      // fires on every single launch.
+      schemaVersion: state.schemaVersion,
       lastSyncTs: state.lastSyncTs
     })
   ]);
@@ -149,12 +187,26 @@ export async function mergeBalances(rows) {
  * Reads
  * ------------------------------------------------------------------ */
 
-/** Full cold-start load: users + items + balances in ONE round trip. */
+/**
+ * Full cold-start load: users + items + balances in ONE round trip.
+ *
+ * @return {Promise<object>} `state`, carrying `schemaUpgraded` when this call
+ *   found the server's data model had moved on. The caller uses it to tell the
+ *   user why their figures changed, rather than letting numbers move silently.
+ */
 export async function bootstrap() {
   const before = await pendingCount();
   const res = await apiGet('bootstrap');
   const after = await pendingCount();
   const d = res.data || {};
+
+  /* ---- PLAN A7: the server's data model moved under this phone ---- */
+  // Done BEFORE anything from the response is adopted, so the clear cannot
+  // wipe the fresh rows it is about to be given.
+  const serverSchema = Number((d.meta && d.meta.schemaVersion) || 0);
+  const schemaUpgraded = serverSchema > state.schemaVersion;
+  if (schemaUpgraded) await clearCachedServerState();
+  if (serverSchema) state.schemaVersion = serverSchema;
 
   state.users = d.users || [];
   state.items = d.items || [];
@@ -176,7 +228,10 @@ export async function bootstrap() {
   state.lastSyncTs = new Date().toISOString();
   state.lastError = null;
   await persist();
-  return state;
+  // Not stored on `state`: it is true of THIS call, not of the app. Leaving it
+  // on the object would make it true forever and the notice would reappear on
+  // every render.
+  return { ...state, schemaUpgraded };
 }
 
 /**

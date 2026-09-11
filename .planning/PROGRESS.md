@@ -1,6 +1,6 @@
 # Open Yard Inventory — Active Progress
 
-Last updated: 2026-09-11 (S03 built, on the same branch, still not merged)
+Last updated: 2026-09-11 (S04 in progress)
 Active wave: Speed, then warehouses
 
 ## Overall  ███░  3/4 sessions
@@ -41,7 +41,7 @@ vehicle number, and every screen responds without waiting on the network.
 [x] S01  Speed + the reverting-stock bug                  [Opus 1M · plan: NO  · teams: YES — 1 builder + 2 reviewers]
 [x] S02  Vehicle number + facility data model & server    [Opus 1M · plan: NO  · teams: YES — Builder×3 + Critic×2 + Fix×2]
 [x] S03  Facility UI + transfers                          [Opus 1M · plan: NO  · teams: YES — Builder×2 + Critic]
-[ ] S04  Migration wipe + full live verification          [Opus 1M · plan: NO  · teams: YES — Verifier×2]
+[~] S04  Migration wipe + full live verification          [Opus 1M · plan: NO  · teams: YES — Verifier×2]
 
 ---
 

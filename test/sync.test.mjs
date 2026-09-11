@@ -10,55 +10,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-/**
- * A minimal in-memory IndexedDB, installed BEFORE sync.js opens one.
- *
- * `mergeBalances` ends in `persist()`, which writes through docs/lib/idb.js.
- * Node has no IndexedDB, so without this the call rejects and the test would
- * have to swallow the error — which would also swallow a real failure. Only
- * the handful of operations idb.js actually uses are implemented; anything
- * else is deliberately absent so a new caller shows up as an error rather
- * than as a silent no-op.
- */
-function installFakeIndexedDb() {
-  const stores = new Map();
-  const storeOf = (n) => {
-    if (!stores.has(n)) stores.set(n, new Map());
-    return stores.get(n);
-  };
-  globalThis.indexedDB = {
-    open() {
-      const req = {};
-      queueMicrotask(() => {
-        req.result = {
-          objectStoreNames: { contains: (n) => stores.has(n) },
-          createObjectStore(n) { storeOf(n); return { createIndex() {} }; },
-          transaction(name) {
-            const m = storeOf(name);
-            const t = {};
-            t.objectStore = () => ({
-              // The cache store is keyed on `key`, the outbox on `seq`.
-              put(v) { const k = v.key !== undefined ? v.key : v.seq; m.set(k, v); return { result: k }; },
-              add(v) { const k = v.key !== undefined ? v.key : v.seq; m.set(k, v); return { result: k }; },
-              get(k) { return { result: m.get(k) }; },
-              getAll() { return { result: [...m.values()] }; },
-              delete(k) { m.delete(k); return { result: undefined }; },
-              count() { return { result: m.size }; },
-              clear() { m.clear(); return { result: undefined }; }
-            });
-            // Fires after the whole synchronous body of idb.js's tx(), which
-            // is where `oncomplete` gets assigned.
-            queueMicrotask(() => { if (t.oncomplete) t.oncomplete(); });
-            return t;
-          }
-        };
-        if (req.onupgradeneeded) req.onupgradeneeded();
-        if (req.onsuccess) req.onsuccess();
-      });
-      return req;
-    }
-  };
-}
+import { installFakeIndexedDb } from './fake-idb.mjs';
+
 installFakeIndexedDb();
 
 import { canAdoptServerSnapshot, mergeBalances, state } from '../docs/lib/sync.js';

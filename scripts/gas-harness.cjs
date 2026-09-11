@@ -55,6 +55,12 @@ function makeSheet(name, grid, calls){
     getLastRow(){ log('getLastRow',name); return s._g.length; },
     getLastColumn(){ log('getLastColumn',name); return s._g.reduce((m,r)=>Math.max(m,r.length),0); },
     getMaxRows(){ return Math.max(s._g.length,100); },
+    // 26, like a real Sheets grid, even when the header is 17 wide. That gap is
+    // not a detail: it is exactly why a 20-cell append into a 17-column Ledger
+    // SUCCEEDS in production instead of throwing, which is the silent
+    // corruption assertSchema_ exists to prevent. A fake that reported 17 here
+    // would make the harness disagree with the failure mode it is modelling.
+    getMaxColumns(){ return Math.max(s._g.reduce((m,r)=>Math.max(m,r.length),0), 26); },
     getRange(r,c,nr,nc){
       nr = nr===undefined?1:nr; nc = nc===undefined?1:nc;
       return {
@@ -71,11 +77,24 @@ function makeSheet(name, grid, calls){
         setBackground(){ return this; }, setFontColor(){ return this; },
         clearContent(){ log('clearContent',name);
           for(let i=0;i<nr;i++){ const tr=r-1+i; if(!s._g[tr])continue;
-            for(let j=0;j<nc;j++) s._g[tr][c-1+j]=''; } return this; }
+            for(let j=0;j<nc;j++) s._g[tr][c-1+j]='';
+            // Trailing blanks are dropped, because getLastColumn() in a real
+            // Sheet counts CONTENT, not cells. Leave them in and clearing a
+            // 17-wide header across the full 26-column grid would make this tab
+            // report 26 columns forever after, and every header comparison and
+            // diag readout downstream would be reading a row that does not
+            // exist in production.
+            while(s._g[tr].length && s._g[tr][s._g[tr].length-1]==='') s._g[tr].pop();
+          } return this; }
       };
     },
     appendRow(row){ log('appendRow',name); s._g.push(row.slice()); },
-    setFrozenRows(){}, deleteRow(i){ s._g.splice(i-1,1); }
+    setFrozenRows(){}, deleteRow(i){ s._g.splice(i-1,1); },
+    deleteRows(i,n){ log('deleteRows',name+' r'+i+' x'+n); s._g.splice(i-1,n); },
+    // The array model is sparse and grows on write, so widening the grid needs
+    // no work — but it must still be LOGGED, or the migration's round-trip
+    // count would silently understate what it does to the real Sheet.
+    insertColumnsAfter(after,n){ log('insertColumnsAfter',name+' after'+after+' x'+n); }
   };
   return s;
 }
@@ -120,7 +139,8 @@ function run(label, book, expr, extraTabs){
         getSheets(){ return Object.keys(sheets).map(k=>sheets[k]); },
         getName(){ return 'fake'; },
         insertSheet(n){ calls.push('insertSheet '+n); book[n]=[]; sheets[n]=makeSheet(n,book[n],calls); return sheets[n]; },
-        deleteSheet(n){ calls.push('deleteSheet'); } }; } },
+        deleteSheet(n){ calls.push('deleteSheet'); } }; },
+      flush(){ calls.push('flush'); } },
     LockService:{ getScriptLock(){ return { tryLock(){return true;}, releaseLock(){} }; } },
     CacheService:{ getScriptCache(){ return { get(){return null;}, getAll(){return {};}, put(){}, putAll(){} }; } },
     ContentService:{ MimeType:{JSON:'json'}, createTextOutput(s){ return { setMimeType(){ return {_body:s}; } }; } },
@@ -282,3 +302,81 @@ run('schema_version 1 refuses a write, and the refusal is RETRYABLE', v1Book(),
 run('Meta says 2 but the Ledger header is the OLD 17-column shape — still refused', lyingHeaderBook(),
     "submitTxnBatch_({txns:[{idemKey:'schema00002',type:'INBOUND',facility:'YARD A',sku:'WIDGET-A',qty:1,damagedQty:0,recordedBy:'Harish'}]})",
     ['Ledger']);
+
+/* =================================================================== *
+ * S04 — migrateToV2, the one-way door.
+ *
+ * These run against a book copied CELL FOR CELL from the live Sheet as it
+ * stood on 2026-09-11 (action=diag, before anything was deployed): the
+ * 17-column Ledger with its five trial rows, the 6-column snapshot, the three
+ * real numeric item codes, two users, no Facilities tab, schema_version 1.
+ *
+ * A fake Sheet cannot prove what Google's flush does. It CAN prove the thing
+ * that actually goes wrong in a migration — a column landing in the wrong
+ * place, a tab left half-rewritten, an epoch that never moved so every phone
+ * keeps serving deleted stock out of cache — and it can prove it without
+ * spending the one run we get on the real book.
+ * =================================================================== */
+
+/** The live Sheet on 2026-09-11, before S04 touched it. */
+function liveV1Book(){
+  return {
+    Items:[['sku','description','uom','barcode','active','created_by','created_ts','updated_by','updated_ts','item_rev'],
+           ['0.3','Concrete Mattress 0.3m','PCS','',true,'Harish','t','Harish','t',1],
+           ['0.5','Concrete Mattress 0.5m','PCS','',true,'Harish','t','Harish','t',1],
+           ['0.6','Concrete Mattress 0.6m','PCS','',true,'Harish','t','Harish','t',1]],
+    Ledger:[['txn_id','idem_key','txn_type','sku','qty','damaged_qty','condition','ref_no','location','remarks','recorded_by','client_ts','server_ts','device_id','app_version','void_of_txn_id','void_of_type'],
+            ['OY-MTV5KMO0YNV9','k1','INBOUND','0.3',2,1,'','','','','Yusuff','2026-09-10T06:35:02.707Z','t','d','1.0.0','',''],
+            ['OY-MTV5KZD9ZQ3B','k2','INBOUND','0.5',5,0,'','','','','Yusuff','2026-09-10T06:35:22.637Z','t','d','1.0.0','',''],
+            ['OY-MTV5ONYED9BV','k3','OUTBOUND','0.5',1,0,'GOOD','AUH123','','Delivery to jebel ali','Yusuff','2026-09-10T06:38:14.245Z','t','d','1.0.0','',''],
+            ['OY-MTV66WZRGWU8','k4','INBOUND','0.6',2,0,'','Trailer no sample','','Comment for sample','Yusuff','2026-09-10T06:52:25.994Z','t','d','1.0.0','',''],
+            ['OY-MTVOLDKQQEWF','k5','INBOUND','0.3',2,0,'','','','','Harish','2026-09-10T15:27:33.604Z','t','d','1.0.0','','']],
+    Users:[['name','active','added_ts'],['Harish',true,'t'],['Yusuff',true,'t']],
+    Meta:[['key','value'],['schema_version',1],['ledger_epoch',120],['items_epoch',64],
+          ['read_only','FALSE'],['min_client_version','1.0.0']],
+    Balance_Snapshot:[['sku','total_qty','damaged_qty','good_qty','last_txn_ts','updated_ts'],
+                      ['0.3',4,1,3,'2026-09-10T15:27:33.604Z','t'],
+                      ['0.5',4,0,4,'2026-09-10T06:38:14.245Z','t'],
+                      ['0.6',2,0,2,'2026-09-10T06:52:25.994Z','t']],
+    Rejections:[['server_ts','idem_key','recorded_by','device_id','payload_json','error_code','error_message']]
+  };
+}
+
+run('migrateToV2Preview says what would go, and changes nothing', liveV1Book(),
+    "migrateToV2Preview()", ['Ledger','Balance_Snapshot','Items']);
+run('migrateToV2 on the live 17-column book', liveV1Book(),
+    "migrateToV2()", ['Ledger','Balance_Snapshot','Items','Facilities']);
+// The second run is the dangerous one: by then the book holds real opening
+// stock typed from a physical count, into an append-only ledger with no backup.
+run('migrateToV2 REFUSES to run a second time', fullBook(),
+    "migrateToV2()", ['Ledger','Balance_Snapshot']);
+// A migration that stopped after widening the headers but before setting the
+// version must be COMPLETABLE, not locked out — so the refusal above has to key
+// on the whole gate, never on the version number alone.
+run('migrateToV2 finishes a half-done migration (headers already v2, version still 1)',
+    (()=>{const b=fullBook(); b.Meta[1]=['schema_version',1]; return b;})(),
+    "migrateToV2()", ['Ledger','Balance_Snapshot']);
+// The proof that the wipe actually reached the phones. A migration that clears
+// the tabs but leaves the epochs alone reads as a total success here and leaves
+// every device serving the deleted numbers out of its epoch-keyed cache.
+// The whole of tonight, in one expression: migrate, create the first warehouse,
+// then type an opening count against it. The epochs are printed because a
+// migration that clears the tabs but leaves them alone reads as a total success
+// while every phone keeps serving the deleted numbers out of its cache.
+run('migrate, then create a warehouse, then record opening stock against it', liveV1Book(),
+    "(function(){ var m = migrateToV2(); " +
+    "var f = upsertFacility_({facility:'YARD A',description:'Main yard',recordedBy:'Harish'}); " +
+    "var w = submitTxnBatch_({txns:[{idemKey:'postmig001',type:'OPENING',facility:'YARD A',sku:'0.3',qty:7,damagedQty:2,recordedBy:'Harish'}]}); " +
+    "return {migrated:m.ok, epochsAfterMigrate:m.epochs, facility:f._body?JSON.parse(f._body).data:f, " +
+    "write:w._body?JSON.parse(w._body).data:w}; })()",
+    ['Ledger','Balance_Snapshot','Facilities']);
+// The same OPENING a second time. This is the guard that protects a number
+// typed from a physical count, and the migration is what put the book in a
+// state where it has never been exercised from a clean start.
+run('a second opening count at the same warehouse is refused after a migration', liveV1Book(),
+    "(function(){ migrateToV2(); " +
+    "upsertFacility_({facility:'YARD A',description:'Main yard',recordedBy:'Harish'}); " +
+    "submitTxnBatch_({txns:[{idemKey:'postmig002',type:'OPENING',facility:'YARD A',sku:'0.3',qty:7,recordedBy:'Harish'}]}); " +
+    "var again = submitTxnBatch_({txns:[{idemKey:'postmig003',type:'OPENING',facility:'YARD A',sku:'0.3',qty:99,recordedBy:'Harish'}]}); " +
+    "return again._body?JSON.parse(again._body).data:again; })()",
+    ['Balance_Snapshot']);

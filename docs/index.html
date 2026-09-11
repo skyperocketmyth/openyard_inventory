@@ -562,7 +562,7 @@ import * as SY from './lib/sync.js';
 
 /* ================= configuration ================= */
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn/exec';
-window.OY_APP_VERSION = '1.0.2';
+window.OY_APP_VERSION = '1.1.0';
 configure(SCRIPT_URL);
 
 const $ = id => document.getElementById(id);
@@ -2943,7 +2943,7 @@ $('failBanner').onclick = async () => {
           ? `<div style="font-size:var(--fs-sm);color:var(--sea)">${esc(rejectionHint(f))}</div>`
           : ''}
         <div class="btn-row">
-          <button class="btn btn-ghost" data-retry="${f.seq}">Try again</button>
+          ${f.noRetry ? '' : `<button class="btn btn-ghost" data-retry="${f.seq}">Try again</button>`}
           <button class="btn btn-danger" data-discard="${f.seq}">Discard</button>
         </div>
       </div>`).join('')
@@ -3084,6 +3084,8 @@ async function init() {
     await SY.loadFromCache();
     if (SY.state.users.length) ui.usersLoaded = true;
     await OB.recoverInFlight();
+    // Before the first flush, so an entry that can never upload is never sent.
+    const stranded = await OB.drainPreWarehouseEntries();
     paintUser();
 
     msg.textContent = 'Checking connection…';
@@ -3095,14 +3097,30 @@ async function init() {
     show(prefs.getUser() ? 'balance' : 'name');
 
     try {
-      await SY.bootstrap();
+      const boot = await SY.bootstrap();
       SY.state.online = true;
       ui.usersLoaded = true;
+      // The stock figures on this phone have just been replaced wholesale.
+      // Saying so is the difference between "the yard was migrated last night"
+      // and "the app lost my numbers", which are indistinguishable in silence.
+      if (boot.schemaUpgraded) {
+        toast('The yard has been set up for warehouses. Stock is now counted '
+          + 'per warehouse — enter the opening count for each one.', 'info');
+      }
     } catch (err) {
       ui.usersLoaded = true;   // done trying; the cache is all we have
       SY.state.online = false;
       if (err instanceof ApiError && err.code === 'NEEDS_AUTH') {
         toast(err.message, 'error');
+      } else if (err instanceof ApiError && err.code === 'SCHEMA_MISMATCH') {
+        // The migration window: the server has been updated and the sheet has
+        // not, so it is refusing every read. Without this the app falls back to
+        // cache in silence and shows yesterday's figures as today's, which is
+        // the one moment in this project's life when that is actively
+        // misleading. The server's own wording is used — it is already written
+        // for a yard worker, and repeating it here in different words is how
+        // the two drift apart.
+        toast(err.message, 'warn');
       } else if (!SY.state.items.length) {
         toast('Working offline — showing what was saved on this phone.', 'warn');
       }
@@ -3113,6 +3131,14 @@ async function init() {
     const s = await OB.flush();
     if (s.balances.length) await SY.mergeBalances(s.balances);
     await render();
+
+    // Last, so it is the message left on screen. These entries are the user's
+    // own work and they have to do something about them, so it must not be
+    // buried under the sync toasts above.
+    if (stranded) {
+      toast(`${stranded} ${stranded === 1 ? 'entry needs' : 'entries need'} a warehouse `
+        + 'before it can upload — tap the red banner.', 'warn');
+    }
   } catch (err) {
     clearTimeout(bootWatchdog);
     $('boot').hidden = true;

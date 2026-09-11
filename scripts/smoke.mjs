@@ -15,6 +15,14 @@
  *   5. issuing more than the good stock is refused BY THE SERVER
  *   6. recording damage does not change the total
  *   7. a batch commits its valid entries even when one entry in it is invalid
+ *   8. attribution is enforced server-side
+ *   9. stock is held PER WAREHOUSE and a transfer moves it between two
+ *
+ * The warehouse names are FIXED, not minted per run. A warehouse can never be
+ * renamed or deleted (9.A), so a unique name per run would leave a permanent
+ * trail of dead yards in the real picker. These two are reused, reactivated at
+ * the start and deactivated at the end, and carry the ZZTEST- prefix that
+ * purgeTestData_ is allowed to remove.
  */
 
 import { readFileSync } from 'node:fs';
@@ -22,6 +30,8 @@ import { readFileSync } from 'node:fs';
 const EXEC = readFileSync('.exec_url', 'utf8').trim();
 const SKU = 'ZZTEST-' + Date.now().toString(36).toUpperCase();
 const USER = 'Smoke Test';
+const FAC = 'ZZTEST-SMOKE A';
+const FAC_B = 'ZZTEST-SMOKE B';
 
 let pass = 0, fail = 0;
 const cleanup = [];
@@ -55,24 +65,51 @@ async function post(action, payload) {
   catch { throw new Error(`non-JSON reply for ${action}: ${text.slice(0, 200)}`); }
 }
 
+/** Every entry names a warehouse; `extra` can override it for the transfer. */
 const txn = (type, extra) => ({
-  idemKey: uuid(), type, sku: SKU, recordedBy: USER,
+  idemKey: uuid(), type, sku: SKU, facility: FAC, recordedBy: USER,
   clientTs: new Date().toISOString(), ...extra
 });
 
-async function balance() {
-  const res = await get('getBalances');
-  const rows = (res.data && res.data.balances) || [];
-  return rows.find(b => b.sku === SKU) || { total: 0, damaged: 0, good: 0 };
+/**
+ * Make a throwaway warehouse exist and be open.
+ *
+ * Reads the current `rev` first. Hardcoding one would take STALE_FACILITY_REV
+ * on the second run of the day — the same trap verify-numeric-sku.mjs hit with
+ * items, where it silently left the test item in the real picker.
+ */
+async function ensureFacility(name) {
+  const list = await get('getFacilities');
+  const cur = ((list.data && list.data.facilities) || [])
+    .find(f => f.facility === name.toUpperCase());
+  return post('upsertFacility', {
+    facility: name, description: 'Smoke test warehouse — safe to ignore',
+    active: true, rev: cur ? cur.rev : undefined, recordedBy: USER
+  });
 }
 
-async function ledgerCount() {
-  const res = await get('getLedger', { sku: SKU, limit: 500 });
+/**
+ * The balance for one item AT ONE WAREHOUSE.
+ *
+ * Matching on the SKU alone would return whichever yard happened to sort
+ * first, so a figure landing at the WRONG warehouse would read as a pass —
+ * which is the single thing this whole session changed and therefore the
+ * single thing these assertions most need to be able to see.
+ */
+async function balance(facility = FAC) {
+  const res = await get('getBalances');
+  const rows = (res.data && res.data.balances) || [];
+  return rows.find(b => b.sku === SKU && b.facility === facility.toUpperCase())
+    || { total: 0, damaged: 0, good: 0 };
+}
+
+async function ledgerCount(facility = FAC) {
+  const res = await get('getLedger', { sku: SKU, facility, limit: 500 });
   return ((res.data && res.data.rows) || []).length;
 }
 
 console.log(`\nSmoke test against ${EXEC.slice(0, 60)}...`);
-console.log(`Throwaway SKU: ${SKU}\n`);
+console.log(`Throwaway SKU: ${SKU}  ·  warehouses: ${FAC} / ${FAC_B}\n`);
 
 try {
   /* 1 -------------------------------------------------------------- */
@@ -85,6 +122,42 @@ try {
     sku: SKU, description: 'Smoke test item', uom: 'PCS', recordedBy: USER
   });
   ok('item created', item.ok === true, JSON.stringify(item.error || ''));
+
+  const fac = await ensureFacility(FAC);
+  await ensureFacility(FAC_B);
+  ok('a warehouse can be created', fac.ok === true, JSON.stringify(fac.error || ''));
+
+  // Writing to an existing warehouse must EDIT it, never make a second one.
+  // The balance key is the name (9.A), so a second row under the same name
+  // would split one yard's stock in two with nothing on screen to show it.
+  const edit = await post('upsertFacility', {
+    facility: FAC, description: 'Smoke test warehouse — edited', recordedBy: USER
+  });
+  const facList = await get('getFacilities');
+  const sameName = ((facList.data && facList.data.facilities) || [])
+    .filter(f => f.facility === FAC.toUpperCase());
+  ok('editing a warehouse updates the one that is there, it does not add another',
+    edit.ok === true && edit.data.created === false && sameName.length === 1,
+    JSON.stringify({ created: edit.data && edit.data.created, rows: sameName.length }));
+
+  // "ZZTEST-SMOKE A" and "zztestsmokea" are the same place. Two yards that
+  // differ only by punctuation would each hold half the stock.
+  const dupe = await post('upsertFacility', {
+    facility: FAC.toLowerCase().replace(/[^a-z]/g, ''), description: 'near duplicate',
+    recordedBy: USER
+  });
+  ok('a near-duplicate warehouse name is refused',
+    dupe.ok === false && dupe.error.code === 'DUPLICATE_FACILITY',
+    JSON.stringify(dupe.error || dupe.data));
+
+  const noFac = await post('submitTxnBatch', {
+    deviceId: 'smoke', appVersion: 'test',
+    txns: [{ ...txn('INBOUND', { qty: 1 }), facility: '' }]
+  });
+  const nf = noFac.data && noFac.data.results && noFac.data.results[0];
+  ok('an entry with no warehouse on it is refused',
+    nf && nf.status === 'rejected' && nf.error.code === 'UNKNOWN_FACILITY',
+    JSON.stringify(nf));
 
   /* 3 --- receive 100 of which 5 damaged --------------------------- */
   const recv = txn('INBOUND', { qty: 100, damagedQty: 5, refNo: 'SMOKE-GRN' });
@@ -175,6 +248,61 @@ try {
   ok('an unknown user name is refused (the name picker is not decoration)',
     nu && nu.status === 'rejected' && nu.error.code === 'NO_USER', JSON.stringify(nu));
 
+  /* 9 --- stock is PER WAREHOUSE, and a transfer moves it ---------- */
+  // The point of the whole session, asserted against the real deployment.
+  const beforeA = await balance();
+  const beforeB = await balance(FAC_B);
+  const moved = await post('submitTxnBatch', {
+    deviceId: 'smoke', appVersion: 'test',
+    txns: [txn('TRANSFER', { toFacility: FAC_B, qty: 10, vehicleNo: 'smoke-1' })]
+  });
+  const mv = moved.data && moved.data.results && moved.data.results[0];
+  ok('a transfer between two warehouses is accepted',
+    mv && mv.status === 'applied', JSON.stringify(mv));
+  if (mv && mv.txnId) cleanup.push(mv.txnId);
+
+  const afterA = await balance();
+  const afterB = await balance(FAC_B);
+  ok('the transfer takes 10 out of the source warehouse',
+    beforeA.total - afterA.total === 10,
+    `${JSON.stringify(beforeA)} -> ${JSON.stringify(afterA)}`);
+  ok('the transfer puts the same 10 into the destination warehouse',
+    afterB.total - beforeB.total === 10,
+    `${JSON.stringify(beforeB)} -> ${JSON.stringify(afterB)}`);
+  // ONE row, not two. Two rows would double-count on a rebuildSnapshot, which
+  // folds every row independently — the source would go -2x the quantity.
+  const rowsA = await get('getLedger', { sku: SKU, facility: FAC, limit: 500 });
+  const rowsB = await get('getLedger', { sku: SKU, facility: FAC_B, limit: 500 });
+  const inA = ((rowsA.data && rowsA.data.rows) || []).filter(r => r.txnId === (mv && mv.txnId));
+  const inB = ((rowsB.data && rowsB.data.rows) || []).filter(r => r.txnId === (mv && mv.txnId));
+  ok('the transfer is ONE ledger row, and it shows in the history of BOTH yards',
+    inA.length === 1 && inB.length === 1 && inA[0].toFacility === FAC_B.toUpperCase(),
+    JSON.stringify({ atSource: inA.length, atDestination: inB.length }));
+  ok('the vehicle number survives the round trip',
+    inA.length === 1 && inA[0].vehicleNo === 'SMOKE-1',
+    JSON.stringify(inA[0] && inA[0].vehicleNo));
+
+  // The failure that separates "per warehouse" from "one pool with labels":
+  // the destination holds 10, so issuing the ACROSS-yard total from it must be
+  // refused. If this ever passes, stock is being summed somewhere it must not be.
+  const overAtB = await post('submitTxnBatch', {
+    deviceId: 'smoke', appVersion: 'test',
+    txns: [txn('OUTBOUND', { facility: FAC_B, qty: afterA.total + afterB.total, condition: 'GOOD' })]
+  });
+  const ob = overAtB.data && overAtB.data.results && overAtB.data.results[0];
+  ok('issuing the across-warehouse total from ONE warehouse is refused',
+    ob && ob.status === 'rejected' && ob.error.code === 'INSUFFICIENT_GOOD_STOCK',
+    JSON.stringify(ob));
+
+  const toNowhere = await post('submitTxnBatch', {
+    deviceId: 'smoke', appVersion: 'test',
+    txns: [txn('TRANSFER', { toFacility: 'ZZTEST-NO SUCH YARD', qty: 1 })]
+  });
+  const tn = toNowhere.data && toNowhere.data.results && toNowhere.data.results[0];
+  ok('a transfer to a warehouse that does not exist is refused',
+    tn && tn.status === 'rejected' && tn.error.code === 'UNKNOWN_FACILITY',
+    JSON.stringify(tn));
+
 } catch (err) {
   fail++;
   console.log(`\n  ERROR  ${err.message}`);
@@ -198,6 +326,22 @@ try {
 
   // Deactivate the throwaway user so it never shows up in the real picker.
   try { await post('setUserActive', { name: USER, active: false }); } catch { /* best effort */ }
+
+  // Close the throwaway warehouses. They cannot be DELETED — a warehouse is
+  // permanent by design (9.A) — so closing them is the whole of the cleanup,
+  // and it is what keeps them out of the yard's picker between runs. The rev
+  // is read fresh: this run has already edited them.
+  try {
+    const list = await get('getFacilities');
+    for (const name of [FAC, FAC_B]) {
+      const cur = ((list.data && list.data.facilities) || [])
+        .find(f => f.facility === name.toUpperCase());
+      if (!cur) continue;
+      await post('upsertFacility', {
+        facility: name, active: false, rev: cur.rev, recordedBy: USER
+      });
+    }
+  } catch { /* best effort */ }
 
   const end = await balance().catch(() => null);
   console.log(`\n  cleanup: voided ${cleanup.length} rows; ${SKU} now at ` +

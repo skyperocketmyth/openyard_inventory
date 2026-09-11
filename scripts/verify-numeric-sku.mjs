@@ -19,6 +19,15 @@ import { readFileSync } from 'node:fs';
 const EXEC = readFileSync('.exec_url', 'utf8').trim();
 const SKU = '0.99';
 const USER = 'Harish';
+/**
+ * A throwaway warehouse, because every entry now needs one.
+ *
+ * Fixed, not minted per run: a warehouse can never be renamed or deleted
+ * (9.A), so a unique name each time would leave a permanent trail of dead
+ * yards in the real picker. It is reopened at the start and closed at the end,
+ * and the ZZTEST- prefix is what lets purgeTestData_ remove it.
+ */
+const FAC = 'ZZTEST-NUMERIC';
 
 let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => {
@@ -60,13 +69,29 @@ const post = (action, payload) =>
   }, action);
 
 const txn = (type, extra) => ({
-  idemKey: uuid(), type, sku: SKU, recordedBy: USER,
+  idemKey: uuid(), type, sku: SKU, facility: FAC, recordedBy: USER,
   clientTs: new Date().toISOString(), ...extra
 });
 
+/** Reopen the throwaway warehouse, reading its current rev first. */
+async function ensureFacility() {
+  const list = await get('getFacilities');
+  const cur = (list.data.facilities || []).find(f => f.facility === FAC);
+  return post('upsertFacility', {
+    facility: FAC, description: 'Numeric-code test warehouse — safe to ignore',
+    active: true, rev: cur ? cur.rev : undefined, recordedBy: USER
+  });
+}
+
+/**
+ * Matched on the warehouse as well as the code. Matching on the code alone
+ * would pick whichever yard sorted first — and since the point of this file is
+ * that "0.5" and "0.50" must stay different keys, a lookup that can silently
+ * return a DIFFERENT row than the one asked for defeats it.
+ */
 async function balance() {
   const b = await get('getBalances');
-  return (b.data.balances || []).find(x => x.sku === SKU)
+  return (b.data.balances || []).find(x => x.sku === SKU && x.facility === FAC)
     || { total: 0, damaged: 0, good: 0 };
 }
 
@@ -75,6 +100,7 @@ const cleanup = [];
 let baseline = { total: 0, damaged: 0, good: 0 };
 
 try {
+  await ensureFacility();
   await post('upsertItem', {
     sku: SKU, description: 'Numeric-code round-trip test', uom: 'PCS', recordedBy: USER
   });
@@ -113,7 +139,8 @@ try {
       && b1.good - b2.good === 12,
     `from ${JSON.stringify(b1)} to ${JSON.stringify(b2)}`);
 
-  const led = await get('getLedger', `&sku=${encodeURIComponent(SKU)}&limit=10`);
+  const led = await get('getLedger',
+    `&sku=${encodeURIComponent(SKU)}&facility=${encodeURIComponent(FAC)}&limit=10`);
   const skus = (led.data.rows || []).map(x => x.sku);
   ok('every ledger row reads back under the same code',
     skus.length > 0 && skus.every(x => x === SKU), JSON.stringify(skus));
@@ -153,6 +180,21 @@ try {
     ok(`${SKU} no longer appears as an active item`,
       !(check.data.items || []).some(x => x.sku === SKU && x.active),
       'it would show up in the yard picker');
+
+    // Close the throwaway warehouse. It cannot be deleted (9.A), so closing it
+    // is the whole of the cleanup — and it is what keeps it out of the real
+    // picker until the next run reopens it.
+    const facs = await get('getFacilities');
+    const cur = (facs.data.facilities || []).find(f => f.facility === FAC);
+    if (cur) {
+      await post('upsertFacility', {
+        facility: FAC, active: false, rev: cur.rev, recordedBy: USER
+      });
+    }
+    const closed = await get('getFacilities');
+    ok(`${FAC} is closed so it stays out of the real warehouse picker`,
+      !(closed.data.facilities || []).some(f => f.facility === FAC && f.active),
+      JSON.stringify((closed.data.facilities || []).find(f => f.facility === FAC)));
   } catch { /* best effort */ }
 }
 

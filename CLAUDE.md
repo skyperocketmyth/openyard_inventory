@@ -84,12 +84,20 @@ on the right total. `OPENING` is enforced once-per-SKU for the same reason.
   `history.back()`, open pushes a state, and the two race.
 - **Do not assert on HTTP status.** Apps Script serves its own error pages at
   200. Assert on the response body.
+- **Do not route `migrateToV2`.** It clears `Ledger`, `Balance_Snapshot` and
+  `Rejections`. `action=setup` is an unauthenticated GET on an
+  `ANYONE_ANONYMOUS` deployment, so a routed destructive action is a public
+  wipe button for the whole yard. It is run by hand from the Apps Script
+  editor, once. It refuses to run a second time (the book is already v2 by
+  then, and holds real opening stock typed from a physical count).
 
 ## Commands
 
 ```
-npm test                  # 86 unit tests: delta contract, adoption gate, validateTxn_,
-                          #   ledger round trip, outbox head-of-line ordering
+npm test                  # 97 unit tests: delta contract, adoption gate, validateTxn_,
+                          #   ledger round trip, outbox head-of-line ordering + the
+                          #   pre-warehouse drain. The gate READS this file list out of
+                          #   package.json — adding a test file here is enough.
 npm run gate              # pre-push checks (manifest, doGet/doPost, tests, Sheet id, CACHE)
 npm run push              # gate + clasp push
 npm run harness           # 45 server scenarios against a fake Sheet — no network, no deploy

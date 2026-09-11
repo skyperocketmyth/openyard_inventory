@@ -49,18 +49,35 @@ if (!/function\s+doPost\s*\(/.test(code)) problems.push('gas/Code.js defines no 
 if (!/function\s+doGet\s*\(/.test(code)) problems.push('gas/Code.js defines no doGet()');
 
 /* 3. the delta contract must still agree across both halves --------------- */
-// This list is a SECOND copy of package.json's "test" script, and the two must
-// stay in step by hand. Adding a test file to package.json alone leaves it out
-// of the gate, which is how test/validate.test.mjs — the only coverage the
-// negative-stock guard has ever had — nearly shipped unenforced.
+// The file list is READ OUT OF package.json rather than repeated here.
+//
+// It used to be a second copy kept in step by hand, with a comment saying so,
+// and it drifted anyway: test/outbox.test.mjs was added to package.json in S03
+// and never to this list, so the head-of-line ordering tests — the coverage for
+// a bug that had gone unnoticed through two reviews — passed `npm test` and
+// were never once enforced on a push. Deriving the list means the gate runs
+// whatever the project calls its test suite, and a file can no longer be
+// invisible to it.
+let testFiles = [];
 try {
-  execFileSync(process.execPath,
-    ['--test', 'test/deltas.test.mjs', 'test/sync.test.mjs', 'test/validate.test.mjs',
-      'test/ledger-roundtrip.test.mjs'],
-    { stdio: 'pipe' });
-  notes.push('unit tests pass (client + server delta lists agree, adoption gate holds, validateTxn_ still refuses negative stock, a written ledger row still lines up with its header)');
-} catch {
-  problems.push('unit tests FAILED — run `npm test`. The client and server balance maths may have drifted.');
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  testFiles = String((pkg.scripts && pkg.scripts.test) || '')
+    .split(/\s+/).filter(f => /^test\/.+\.mjs$/.test(f));
+} catch { /* reported just below as "no test files" */ }
+
+if (!testFiles.length) {
+  problems.push('could not read the test file list out of package.json "scripts.test" — the gate would be running no tests at all');
+} else {
+  const missing = testFiles.filter(f => !existsSync(f));
+  if (missing.length) {
+    problems.push(`package.json lists test files that do not exist: ${missing.join(', ')}`);
+  }
+  try {
+    execFileSync(process.execPath, ['--test', ...testFiles], { stdio: 'pipe' });
+    notes.push(`unit tests pass across ${testFiles.length} files (client + server delta lists agree, adoption gate holds, validateTxn_ still refuses negative stock, a written ledger row still lines up with its header, the outbox keeps its per-yard ordering and only strands entries that can never send)`);
+  } catch {
+    problems.push('unit tests FAILED — run `npm test`. The client and server balance maths may have drifted.');
+  }
 }
 
 /* 4. the app's inline module must PARSE ----------------------------------- */

@@ -290,6 +290,177 @@ function deleteRowsWhere_(tabName, predicate) {
   return n;
 }
 
+/* ------------------------------------------------------------------ *
+ * migrateToV2 — the one-way door.
+ *
+ * NOT IN route_, and that is the whole point. `action=setup` is an
+ * UNAUTHENTICATED GET on an ANYONE_ANONYMOUS deployment; routing anything
+ * that CLEARS tabs would publish a one-click wipe button for the entire yard
+ * to anyone who has ever seen the /exec URL. This runs from the Apps Script
+ * editor, by a human, once. Do not add a case for it.
+ *
+ * What it does, in an order where every step is safe to stop at:
+ *   1. refuse if the book is already v2 — see below, this is the guard that
+ *      stops a second run destroying real stock
+ *   2. delete every data row from Ledger / Balance_Snapshot / Rejections
+ *   3. rewrite those two header rows to the 20- and 8-column shapes
+ *   4. ensureTabs_ — creates Facilities, and RE-APPLIES the plain-text column
+ *      formats (X8: `sku` moved Ledger 4 -> 6 and Snapshot 1 -> 2, and the '@'
+ *      format is only ever applied here, so without this step the first "0.50"
+ *      code silently becomes 0.5 again — the corruption fixed in 4856d64)
+ *   5. bump ledger_epoch, items_epoch AND facilities_epoch
+ *   6. set schema_version = 2 — LAST
+ *
+ * Why the order matters, both ways round:
+ *  - schema_version LAST because the gate checks the header row as well as the
+ *    number (assertSchema_). Setting the number first, then failing partway
+ *    through, opens the gate onto a half-migrated book — every positional read
+ *    would then land on the wrong column and nothing would throw.
+ *  - the epochs are bumped EXPLICITLY because ensureTabs_ only seeds ABSENT
+ *    Meta keys. Without a bump, getBalancesRead_ answers `unchanged:true` to
+ *    every phone and readBalances_/readItems_ keep serving the PRE-wipe rows
+ *    out of the epoch-keyed CacheService entry. The deleted numbers would live
+ *    on every device forever, with nothing to show they had been deleted.
+ *
+ * Items and Users are deliberately NOT touched. They are real reference data;
+ * it is the stock history that has no warehouse on it and has to go (3.C).
+ * ------------------------------------------------------------------ */
+
+function migrateToV2() {
+  // A SECOND RUN IS THE DANGEROUS ONE. The first run deletes trial data that
+  // is already known to be worthless. By the time anyone runs this again the
+  // book holds real opening stock, typed in by hand from a physical count, in
+  // an append-only ledger with no backup (13.A). So: if the book is already at
+  // v2 with the right headers, this does nothing at all and says so.
+  var already = schemaProblem_();
+  if (!already) {
+    return {
+      alreadyDone: true,
+      message: 'This sheet is already migrated (schema 2, headers correct). ' +
+        'Nothing was changed. Running this again would DELETE live stock.'
+    };
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_MS)) {
+    return { error: 'Server busy — a write is in progress. Try again in a moment.' };
+  }
+  try {
+    var before = {
+      ledger: dataRowCount_(T_LEDGER),
+      snapshot: dataRowCount_(T_SNAP),
+      rejections: dataRowCount_(T_REJ),
+      items: dataRowCount_(T_ITEMS),
+      users: dataRowCount_(T_USERS)
+    };
+
+    var cleared = {
+      ledger: clearDataRows_(T_LEDGER),
+      snapshot: clearDataRows_(T_SNAP),
+      rejections: clearDataRows_(T_REJ)
+    };
+
+    writeHeaderRow_(T_LEDGER, H_LEDGER);
+    writeHeaderRow_(T_SNAP, H_SNAP);
+    SpreadsheetApp.flush();
+
+    var setup = ensureTabs_();
+
+    var epochs = {
+      ledger: bumpEpoch_('ledger_epoch'),
+      items: bumpEpoch_('items_epoch'),
+      facilities: bumpEpoch_('facilities_epoch')
+    };
+
+    metaSet_('schema_version', SCHEMA_VERSION_REQUIRED);
+    SpreadsheetApp.flush();
+
+    // The gate memoises its verdict per execution, and this execution has just
+    // made that verdict wrong. Drop it so the check below reads the Sheet.
+    _schemaErr = undefined;
+    var remaining = schemaProblem_();
+
+    var result = {
+      ok: !remaining,
+      rowsBefore: before,
+      rowsDeleted: cleared,
+      keptItems: before.items,
+      keptUsers: before.users,
+      epochs: epochs,
+      schemaVersion: SCHEMA_VERSION_REQUIRED,
+      textFormatted: setup.textFormatted,
+      textSkipped: setup.textSkipped,
+      facilitiesTab: setup.created.indexOf(T_FAC) !== -1 ? 'created' : 'already there',
+      schemaGate: remaining ? remaining.message : 'open — the app may now write'
+    };
+    Logger.log(JSON.stringify(result, null, 2));
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Read-only. Says exactly what migrateToV2 would delete and what it would
+ * keep, without touching anything — so the irreversible step can be confirmed
+ * against real numbers rather than a promise. Safe to run any number of times.
+ */
+function migrateToV2Preview() {
+  var problem = schemaProblem_();
+  var out = {
+    alreadyMigrated: !problem,
+    wouldDelete: {
+      ledgerRows: dataRowCount_(T_LEDGER),
+      snapshotRows: dataRowCount_(T_SNAP),
+      rejectionRows: dataRowCount_(T_REJ)
+    },
+    wouldKeep: {
+      items: dataRowCount_(T_ITEMS),
+      users: dataRowCount_(T_USERS)
+    },
+    meta: metaAll_()
+  };
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
+/** Data rows (header excluded) in a tab that may not exist yet. */
+function dataRowCount_(name) {
+  var sh = ss_().getSheetByName(name);
+  if (!sh) return 0;
+  return Math.max(sh.getLastRow() - 1, 0);
+}
+
+/** Delete every row below the header, in one call. Returns the count. */
+function clearDataRows_(name) {
+  var sh = ss_().getSheetByName(name);
+  if (!sh) return 0;
+  var last = sh.getLastRow();
+  if (last < 2) return 0;
+  var n = last - 1;
+  sh.deleteRows(2, n);
+  return n;
+}
+
+/**
+ * Replace a header row wholesale, widening the grid if the new header does not
+ * fit. The old row is cleared first: a 20-column header written over a
+ * 17-column one leaves nothing behind, but a header that ever SHRANK would
+ * strand its last cells to the right of the new one, where headerMatches_
+ * cannot see them and a human reading the tab would be misled.
+ */
+function writeHeaderRow_(name, header) {
+  var sh = tab_(name);
+  if (sh.getMaxColumns() < header.length) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), header.length - sh.getMaxColumns());
+  }
+  sh.getRange(1, 1, 1, sh.getMaxColumns()).clearContent();
+  var range = sh.getRange(1, 1, 1, header.length);
+  range.setValues([header]);
+  range.setFontWeight('bold').setBackground('#002060').setFontColor('#ffffff');
+  sh.setFrozenRows(1);
+}
+
 /** Seed the user list. Safe to re-run — addUser_ is idempotent by name. */
 function seedUsers(names) {
   var list = names || ['Harish'];

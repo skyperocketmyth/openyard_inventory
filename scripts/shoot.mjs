@@ -114,12 +114,23 @@ try {
       { sku:'CEM-OPC-50',description:'Cement OPC 50kg bag',      uom:'BAG', active:true, rev:1 },
       { sku:'SCAF-TUBE', description:'Scaffold Tube 6m',         uom:'PCS', active:true, rev:1 }
     ];
+    const SAMPLE_FACS = [
+      { facility:'YARD A', description:'Main yard, north gate', active:true, rev:1 },
+      { facility:'YARD B', description:'Overflow yard',         active:true, rev:1 }
+    ];
+    // Every row carries its warehouse, and two items are deliberately held at
+    // BOTH yards with different figures. A seed where each item lived at one
+    // yard would render identically whether the app keyed balances per
+    // warehouse or summed them into one pool — so the screenshots would look
+    // right while showing nothing.
     const SAMPLE_BAL = [
-      { sku:'TMT-12MM',   total:350,  damaged:12, lastTxnTs:'2026-09-09T09:02:00.000Z' },
-      { sku:'PLY-18-BR',  total:80,   damaged:18, lastTxnTs:'2026-09-09T08:40:00.000Z' },
-      { sku:'AGG-20MM',   total:1200, damaged:0,  lastTxnTs:'2026-09-08T14:15:00.000Z' },
-      { sku:'CEM-OPC-50', total:640,  damaged:35, lastTxnTs:'2026-09-09T07:20:00.000Z' },
-      { sku:'SCAF-TUBE',  total:210,  damaged:0,  lastTxnTs:'2026-09-07T11:05:00.000Z' }
+      { facility:'YARD A', sku:'TMT-12MM',   total:350,  damaged:12, lastTxnTs:'2026-09-09T09:02:00.000Z' },
+      { facility:'YARD B', sku:'TMT-12MM',   total:120,  damaged:0,  lastTxnTs:'2026-09-09T08:55:00.000Z' },
+      { facility:'YARD A', sku:'PLY-18-BR',  total:80,   damaged:18, lastTxnTs:'2026-09-09T08:40:00.000Z' },
+      { facility:'YARD A', sku:'AGG-20MM',   total:1200, damaged:0,  lastTxnTs:'2026-09-08T14:15:00.000Z' },
+      { facility:'YARD B', sku:'CEM-OPC-50', total:640,  damaged:35, lastTxnTs:'2026-09-09T07:20:00.000Z' },
+      { facility:'YARD A', sku:'CEM-OPC-50', total:95,   damaged:0,  lastTxnTs:'2026-09-09T06:10:00.000Z' },
+      { facility:'YARD B', sku:'SCAF-TUBE',  total:210,  damaged:0,  lastTxnTs:'2026-09-07T11:05:00.000Z' }
     ];
     const db = await new Promise(res => {
       const r = indexedDB.open('oy_db', 1);
@@ -131,9 +142,17 @@ try {
       t.oncomplete = res;
     });
     await put('items', SAMPLE_ITEMS);
-    await put('balances', SAMPLE_BAL);
+    await put('facilities', SAMPLE_FACS);
+    // 'balances_v2', not 'balances'. The key moved in S02 when a balance row
+    // gained a warehouse, and this file kept writing the old one — so it spent
+    // two sessions seeding a key nothing reads, and every screenshot after the
+    // name picker was of an empty app.
+    await put('balances_v2', SAMPLE_BAL);
     await put('users', ['Rakesh Kumar','Suresh Nair','Anil Joseph']);
-    await put('meta', { epoch: 99, itemsEpoch: 99, lastSyncTs: new Date().toISOString() });
+    // schemaVersion matches the server's, or the first bootstrap would treat
+    // this as an upgraded phone and clear everything seeded above.
+    await put('meta', { epoch: 99, itemsEpoch: 99, facilitiesEpoch: 99,
+                        schemaVersion: 2, lastSyncTs: new Date().toISOString() });
     localStorage.setItem('oy_user', 'Rakesh Kumar');
     localStorage.setItem('oy_recent', JSON.stringify(['TMT-12MM','PLY-18-BR']));
     return true;
@@ -168,6 +187,20 @@ try {
   // and the "damaged is a subset" device are visible.
   await evalIn(`document.querySelector('.tab[data-screen="receive"]').click()`);
   await sleep(600);
+  // The warehouse FIRST. Every entry screen requires one (5.A) and offers no
+  // pre-fill (6.B), so without this the item picker opens against no yard, the
+  // quantity limit is zero and the submit button can never enable — the form
+  // would be photographed in a state a yard worker can never reach.
+  await evalIn(`(() => {
+    const f = document.getElementById('rcvFac'); if (f) f.click(); return true;
+  })()`);
+  await sleep(1000);
+  await shoot('06a-warehouse-picker');
+  await evalIn(`(() => {
+    const r = document.querySelector('#fpList [data-fac]');
+    if (r) { r.click(); return r.dataset.fac; } return null;
+  })()`);
+  await sleep(1000);
   await evalIn(`(() => {
     const t = document.getElementById('rcvItem'); if (t) t.click(); return true;
   })()`);
