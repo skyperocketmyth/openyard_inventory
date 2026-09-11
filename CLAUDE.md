@@ -72,18 +72,46 @@ on the right total. `OPENING` is enforced once-per-SKU for the same reason.
   `test/deltas.fixtures.json`.
 - **Do not let a read adopt server balances while writes are pending.** Go
   through `canAdoptServerSnapshot` in `docs/lib/sync.js`.
+- **Do not gate an action on stock summed across warehouses.** Every quantity
+  limit, enable check and prefill reads the SELECTED warehouse's `good`. The
+  "All warehouses" stock view is view-only and offers no action buttons at all,
+  which is what makes this structural rather than a check to remember. See
+  `uiFacility` in `docs/index.html` and PLAN finding F10.
+- **Do not open a sheet from inside a sheet and expect to come back.** There is
+  one sheet; `openSheet` replaces its contents. A form that needs a sub-choice
+  uses inline chips, or re-opens itself from the callback. And never
+  `closeSheet()` immediately followed by `openSheet()` — close runs
+  `history.back()`, open pushes a state, and the two race.
 - **Do not assert on HTTP status.** Apps Script serves its own error pages at
   200. Assert on the response body.
 
 ## Commands
 
 ```
-npm test                  # 17 unit tests: delta contract + adoption gate
-npm run gate              # pre-push checks (manifest, doGet/doPost, tests, Sheet id)
+npm test                  # 86 unit tests: delta contract, adoption gate, validateTxn_,
+                          #   ledger round trip, outbox head-of-line ordering
+npm run gate              # pre-push checks (manifest, doGet/doPost, tests, Sheet id, CACHE)
 npm run push              # gate + clasp push
+npm run harness           # 45 server scenarios against a fake Sheet — no network, no deploy
 node scripts/smoke.mjs    # 16 live tests against the deployed web app
 python scripts/make-icons.py   # regenerate docs/icon-*.png
 ```
+
+Browser checks. They all take the URL as `argv[2]` and otherwise default to the LIVE
+GitHub Pages site — so **serve `docs/` and pass the local URL**, or you are testing a build
+you have already pushed to Harish's phone:
+
+```
+npm run serve             # docs/ on http://127.0.0.1:8787/  (leave running)
+node scripts/verify-mobile.mjs     http://127.0.0.1:8787/   # 18 layout checks
+node scripts/verify-flows.mjs      http://127.0.0.1:8787/   # 8 interaction checks
+node scripts/verify-facilities.mjs http://127.0.0.1:8787/   # 34 warehouse-UI checks
+```
+
+`verify-facilities` seeds warehouses into the throwaway browser profile (never the Sheet)
+and blocks the API, because warehouse data does not exist on any reachable server until S04
+migrates it. Its load-bearing check is that an action is gated on the SELECTED warehouse's
+good stock and never on the across-warehouse total.
 
 Redeploy after a `gas/` change:
 ```

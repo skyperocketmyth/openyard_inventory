@@ -14,10 +14,19 @@
  *    second row. Minting the key server-side would silently turn every retry
  *    into a double-post.
  *
- *  - Head-of-line blocking is PER SKU, not global. Entries for different items
- *    are independent; within one item, order matters (receive-then-issue
- *    validates, the reverse does not). So one bad steel entry must not freeze
- *    every cement entry queued behind it.
+ *  - Head-of-line blocking is PER (FACILITY, SKU), not global and not per SKU.
+ *    Entries for different items — or for the same item at different yards —
+ *    are independent; within one item at one yard, order matters
+ *    (receive-then-issue validates, the reverse does not). So one bad steel
+ *    entry at YARD A must not freeze every cement entry queued behind it, nor
+ *    the steel entries at YARD B. A TRANSFER occupies BOTH of its ends: it
+ *    orders against later entries at its source and at its destination.
+ *
+ *    The `blocked` set is threaded THROUGH the self-recursive call at the end
+ *    of `flush()`. It has to be: the recursion is taken while retryable
+ *    rejections are still sitting in the queue, so a set that started empty
+ *    there would send the very entries the first pass held back, out of order,
+ *    seconds later. That is the bug this set exists to prevent.
  *
  *  - A retryable failure is NEVER dropped. A permanent rejection is never
  *    silently dropped either — it moves to `failures` and raises a banner the
@@ -31,6 +40,7 @@
 
 import { idb, STORE_OUTBOX, STORE_FAILURES, prefs } from './idb.js';
 import { apiPost, ApiError } from './api.js';
+import { balKey, normSku, normFacility } from './deltas.js';
 
 export const MAX_BATCH = 25;
 const BACKOFF_MS = [2000, 5000, 15000, 30000, 60000, 120000];
@@ -148,11 +158,13 @@ export async function enqueue(entry) {
   const rec = {
     idemKey: newIdemKey(),
     type: entry.type,
-    sku: String(entry.sku || '').trim().toUpperCase(),
+    // normSku, not `String(entry.sku || '')`. This yard has live numeric item
+    // codes and a SKU of 0 is real: the obvious-looking version turns it into
+    // '' at queue time, which is the class of bug commit 4856d64 exists for.
+    sku: normSku(entry.sku),
     // Top level, NOT inside `payload`: the txns mapper below reads them
-    // directly, and the head-of-line `blocked` set is re-keyed onto
-    // (facility, sku) next — it still keys on `sku` alone today, which blocks
-    // an entry at YARD B behind an unrelated failure at YARD A.
+    // directly, and so does `entryKeys` when it keys the head-of-line
+    // `blocked` set onto (facility, sku).
     facility: String(entry.facility || '').trim().toUpperCase(),
     toFacility: String(entry.toFacility || '').trim().toUpperCase(),
     payload: entry.payload || {},
@@ -179,10 +191,72 @@ export async function enqueue(entry) {
  * ------------------------------------------------------------------ */
 
 /**
+ * The balance keys one outbox entry occupies, for head-of-line ordering.
+ *
+ * One key for every type but TRANSFER, which occupies BOTH ends — a move out
+ * of YARD A into YARD B has to order against later entries at A *and* at B.
+ *
+ * `normSku`/`normFacility` first, then `balKey` — the same pairing `foldDeltas`
+ * uses, and not decoration: `balKey` normalises with `String(v || '')`, which
+ * turns a live numeric SKU of 0 into '' and quietly merges it with the
+ * no-SKU key. `normSku(0)` is '0'. (Same class of bug as commit 4856d64.)
+ *
+ * The `payload` fallback covers entries queued by an older build, before the
+ * facility moved to the top level of the record — `projectBalances` in
+ * deltas.js does exactly this.
+ *
+ * @param {object} it an outbox record
+ * @return {string[]} one or two 'FACILITY|SKU' keys
+ */
+export function entryKeys(it) {
+  const sku = normSku(it.sku);
+  const from = balKey(normFacility(it.facility ?? it.payload?.facility ?? ''), sku);
+  if (String(it.type || '').toUpperCase() !== 'TRANSFER') return [from];
+  const to = balKey(normFacility(it.toFacility ?? it.payload?.toFacility ?? ''), sku);
+  // A transfer whose two ends collapse to one key (same yard, or both blank)
+  // must not report a duplicate — callers iterate these.
+  return to === from ? [from] : [from, to];
+}
+
+/**
+ * Choose the entries to send this pass, in queue order, skipping anything
+ * behind a blocked key. MUTATES `blocked`: a skipped entry adds its OWN keys,
+ * because it is now the head of the line for them — otherwise a TRANSFER held
+ * back at its source would still let a later entry at its destination through
+ * and apply the pair out of order.
+ *
+ * Pure, and exported, because `flush()` cannot be unit-tested (no IndexedDB in
+ * Node) and this is the part with the ordering logic in it.
+ *
+ * @param {object[]} queue pending entries, already sorted by seq
+ * @param {Set<string>} blocked keys held back this flush; mutated
+ * @param {number} max batch cap
+ * @return {object[]} the entries to send
+ */
+export function selectBatch(queue, blocked, max) {
+  const batch = [];
+  for (const it of queue) {
+    if (batch.length >= max) break;
+    const keys = entryKeys(it);
+    if (keys.some(k => blocked.has(k))) {
+      for (const k of keys) blocked.add(k);
+      continue;
+    }
+    batch.push(it);
+  }
+  return batch;
+}
+
+/**
  * Push the queue. Returns a summary; never throws.
+ *
+ * @param {Set<string>} [blocked] head-of-line keys already held back. Defaults
+ *   to a fresh set, so every existing caller keeps calling `flush()` with no
+ *   arguments; the self-recursive call at the bottom passes its own set down,
+ *   which is the whole point (see the file header).
  * @return {Promise<{sent:number, applied:number, rejected:number, balances:Array, error:?ApiError}>}
  */
-export async function flush() {
+export async function flush(blocked = new Set()) {
   if (flushing) return { sent: 0, applied: 0, rejected: 0, balances: [], error: null };
   flushing = true;
   emit();
@@ -193,15 +267,11 @@ export async function flush() {
     const queue = await pendingItems();
     if (!queue.length) return summary;
 
-    // Per-SKU head-of-line: once a SKU has a rejected entry this pass, skip
-    // its later entries so we don't apply them out of order.
-    const blocked = new Set();
-    const batch = [];
-    for (const it of queue) {
-      if (batch.length >= MAX_BATCH) break;
-      if (blocked.has(it.sku)) continue;
-      batch.push(it);
-    }
+    // Per-(facility, SKU) head-of-line: once a key has an entry that did not
+    // apply this pass, skip its later entries so we don't apply them out of
+    // order. `blocked` arrives from the caller and carries across the
+    // recursion at the bottom.
+    const batch = selectBatch(queue, blocked, MAX_BATCH);
     if (!batch.length) return summary;
 
     for (const it of batch) {
@@ -239,6 +309,11 @@ export async function flush() {
       // attempt, schedule a jittered retry. Nothing is ever discarded here.
       const apiErr = err instanceof ApiError ? err : new ApiError('UNKNOWN', String(err), true);
       for (const it of batch) {
+        // The whole batch went nowhere, so every entry in it is still the head
+        // of the line for its keys. Block them before returning: this call
+        // does not reach the recursion, but `blocked` is the caller's set now
+        // and a later pass reusing it must not overtake them.
+        for (const k of entryKeys(it)) blocked.add(k);
         const attempts = it.attempts + 1;
         await idb.put(STORE_OUTBOX, {
           ...it,
@@ -262,6 +337,7 @@ export async function flush() {
 
       if (!r) {
         // The server did not mention it. Treat as unsent, not as lost.
+        for (const k of entryKeys(it)) blocked.add(k);
         await idb.put(STORE_OUTBOX, { ...it, status: 'pending', attempts: it.attempts + 1 });
         continue;
       }
@@ -274,7 +350,10 @@ export async function flush() {
         continue;
       }
 
-      // rejected
+      // rejected — either way this entry did not apply, so nothing later at
+      // its keys may apply during this flush.
+      for (const k of entryKeys(it)) blocked.add(k);
+
       const err = r.error || { code: 'UNKNOWN', message: 'Rejected' };
       if (err.retryable) {
         await idb.put(STORE_OUTBOX, {
@@ -282,6 +361,12 @@ export async function flush() {
         });
         continue;
       }
+      // Blocking on a PERMANENT rejection too is deliberate. The entry leaves
+      // the queue here, so its successors are no longer strictly out of order
+      // — but it is gone pending a decision the user has to make on the
+      // failures banner (retry it, or discard it), and applying the entries
+      // that were queued behind it seconds later, inside the same flush, is
+      // still the wrong call. The key clears by itself on the next flush.
       await idb.put(STORE_FAILURES, {
         ...it, status: 'failed', error: err, failedTs: new Date().toISOString()
       });
@@ -296,7 +381,9 @@ export async function flush() {
     // More waiting and nothing blocking? Keep going.
     if (await pendingCount() > 0 && summary.applied > 0) {
       flushing = false;
-      const more = await flush();
+      // `blocked`, not a fresh set: everything held back above must stay held
+      // back on the next pass, or this recursion sends it out of order.
+      const more = await flush(blocked);
       summary.applied += more.applied;
       summary.rejected += more.rejected;
       summary.balances = summary.balances.concat(more.balances);

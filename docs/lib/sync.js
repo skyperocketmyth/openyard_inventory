@@ -232,6 +232,31 @@ export async function refreshFacilities() {
 }
 
 /**
+ * Fold one saved warehouse back into local state, using the full record
+ * `upsertFacility` returns, so the screen updates without a second round trip.
+ *
+ * Merged by NAME, which is safe precisely because a warehouse can never be
+ * renamed (9.A) — the key it is merged on is the same key it will always have.
+ * The list is kept sorted by name to match the server's own order, so the
+ * picker does not visibly reshuffle when the next read lands.
+ */
+export async function mergeFacility(rec) {
+  if (!rec || !rec.facility) return state.facilities;
+  const key = normFacility(rec.facility);
+  const merged = {
+    facility: key,
+    description: String(rec.description ?? ''),
+    active: rec.active !== false,
+    rev: Number(rec.rev) || 0
+  };
+  const rest = state.facilities.filter(f => normFacility(f.facility) !== key);
+  state.facilities = [...rest, merged].sort((a, b) =>
+    a.facility < b.facility ? -1 : a.facility > b.facility ? 1 : 0);
+  await persist();
+  return state.facilities;
+}
+
+/**
  * Pull-to-refresh. SEND THEN READ, deliberately.
  *
  * Reading first would report the state from before the pending write — which is
@@ -249,7 +274,16 @@ export async function manualRefresh() {
   try {
     await refreshBalances();
     await refreshItems();
-    await refreshFacilities();
+    // Its own try/catch, and not a lazy one. A server that predates warehouses
+    // answers UNKNOWN_ACTION here, which is NOT retryable — so without this the
+    // whole pull-to-refresh reports a hard failure even though the upload and
+    // both other reads succeeded, and the user is told the sync broke when it
+    // did not. Any other failure is still surfaced.
+    try {
+      await refreshFacilities();
+    } catch (err) {
+      if (!(err instanceof ApiError && err.code === 'UNKNOWN_ACTION')) throw err;
+    }
     state.lastError = null;
   } catch (err) {
     state.lastError = err instanceof ApiError ? err : new ApiError('UNKNOWN', String(err), true);

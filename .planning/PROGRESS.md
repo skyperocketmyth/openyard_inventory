@@ -1,13 +1,13 @@
 # Open Yard Inventory — Active Progress
 
-Last updated: 2026-09-10 (S02 built, on a branch, not merged)
+Last updated: 2026-09-11 (S03 built, on the same branch, still not merged)
 Active wave: Speed, then warehouses
 
-## Overall  ██░░  2/4 sessions
+## Overall  ███░  3/4 sessions
 
 ## Phase 0 — Performance & correctness      █  1/1
 ## Phase 1 — Vehicle no. + facility model   █  1/1
-## Phase 2 — Facility UI + transfers        ░  0/1
+## Phase 2 — Facility UI + transfers        █  1/1
 ## Phase 3 — Migration + live verification  ░  0/1
 
 ---
@@ -40,7 +40,7 @@ vehicle number, and every screen responds without waiting on the network.
 
 [x] S01  Speed + the reverting-stock bug                  [Opus 1M · plan: NO  · teams: YES — 1 builder + 2 reviewers]
 [x] S02  Vehicle number + facility data model & server    [Opus 1M · plan: NO  · teams: YES — Builder×3 + Critic×2 + Fix×2]
-[ ] S03  Facility UI + transfers                          [Opus 1M · plan: NO  · teams: YES — Builder×2 + Critic]
+[x] S03  Facility UI + transfers                          [Opus 1M · plan: NO  · teams: YES — Builder×2 + Critic]
 [ ] S04  Migration wipe + full live verification          [Opus 1M · plan: NO  · teams: YES — Verifier×2]
 
 ---
@@ -216,6 +216,140 @@ Bundle:
 
 ---
 
+## S03 — built 2026-09-11 on branch `feat/s02-facilities-server` (NOT merged, NOT deployed)
+
+Ship: the app runs against a locally served `docs/` with a warehouse picker on every entry
+screen, working transfers, 18/18 layout and 8/8 flows still green — and pre-push check 10
+gone quiet.
+
+**Check 10 is the headline.** It blocked the push because `gas/` refuses any entry without a
+warehouse while the app could not supply one. It now reads *"the app supplies a warehouse on
+every entry, so the server may require one."* `gas/` and `docs/` can ship together.
+
+Built: warehouse chip row on the stock screen (All + one per open yard) · the All view
+aggregates per ITEM and is view-only · warehouse picker on Receive and Issue · "Move stock"
+(TRANSFER) and "Record damage" on the per-yard item sheet · per-warehouse **opening stock**
+· "Manage warehouses" in the account sheet (add / describe / close — never rename, never
+delete) · `blocked` populated in `docs/lib/outbox.js` · X13 rejection wording · vehicle
+number on transfers as well as issues.
+
+### How F10 was closed — structurally, not by a check
+
+`uiFacility` is now ONLY the stock screen's chip filter. Entry screens carry their own
+`ui.rcvFacility` / `ui.issFacility`; every sheet takes the yard as an argument.
+`openItemDetail(sku, facility)` splits in two: the **All** sheet has no Receive/Issue/Damage/
+Move buttons *at all* — only a per-yard breakdown you must tap — and the **per-yard** sheet
+gates every button on that one yard's `good`. There is therefore no code path where an action
+is enabled by an across-yard total; adding a button to the aggregate sheet would be the bug,
+rather than forgetting a check being the bug.
+
+### Found by review, fixed here
+
+- 🔴 **The empty-yard "Receive stock" button inherited a different warehouse.** Only the tab
+  bar cleared the entry screens' yard. So: act at YARD A → select empty YARD B → the screen
+  says "All items are at zero" → tap its own **Receive stock** → the form opens pre-filled
+  with **YARD A**, one `+25` tap from filing a receipt against it. `show(screen, facility)`
+  now clears by DEFAULT and a route that should carry a yard has to say so — which also
+  covers routes nobody has written yet. Pinned by a regression check.
+- **Nothing validated a warehouse except the stock screen's own filter.** A balance row names
+  its yard; the warehouse list is a separate read; the Sheet is hand-editable on an
+  `ANYONE_ANONYMOUS` deployment. A yard deleted by hand left stock rows pointing at a
+  warehouse that no longer exists — and every `!facility` guard passed, because the string is
+  truthy. New `knownFacility()` is applied in `openItemAtFacility` and in all five enqueue
+  paths. A CLOSED yard still passes it: 11.A accepts those and flags them.
+- **Damage and Move gated on a `maxGood` captured when the sheet opened**, with a confirm
+  step added on top. Both now re-read the live projection inside `onConfirm`. Only Issue did.
+- **Opening stock could only ever be recorded at ONE warehouse** — the item form, at item
+  creation. A second yard had to enter its physical count as a Receive, writing an INBOUND
+  row for a delivery that never happened. **S04's deliverable is opening stock per warehouse,
+  so S04 could not have been done.** New per-yard "Set opening stock" sheet.
+- The "Opening stock is locked because this item already has movements" note rendered only on
+  the EDIT form, which has no opening fields — an unreachable guard dressed as an active one.
+- Damage's change-warehouse picker offered yards holding nothing, replacing the sheet with a
+  form whose limit was 0 and whose submit could never enable — and the sheet it replaced was
+  gone. Filtered to yards with good stock.
+- **Sheets destroying their own callers.** There is only ONE sheet. Opening the warehouse
+  picker from inside the transfer sheet or the item form wiped the form underneath it: the
+  transfer's `$('trTo')` no longer existed and `onPick` threw. Both now use inline chips.
+  `openFacilityPicker` no longer closes the sheet either — `closeSheet()` immediately
+  followed by `openSheet()` races `history.back()`, which is the exact bug
+  `scripts/verify-flows.mjs` exists to catch.
+- The transfer's vehicle number and note were read inside `onConfirm`, by which time
+  `confirmSheet` had replaced the body — both silently dropped. Captured before.
+- `refreshFacilities()` throwing `UNKNOWN_ACTION` against a pre-warehouse server made
+  pull-to-refresh report a hard failure even though the upload and both other reads had
+  succeeded. Caught narrowly in `sync.js`.
+- A stock total was painted above "No warehouses yet".
+
+### Found by a SECOND review, of the fixes above
+
+The first fix pass introduced or left three things worth the second pass on its own:
+
+- 🔴 **"Damaged (of which)" on both opening-stock forms contradicted the arithmetic.** The
+  entry sent is `qty = good + damaged`, so the two fields ADD; "of which" says damaged is a
+  subset of the number above it. A count of "100 units, 20 of them damaged" typed as 100 and
+  20 posts an opening TOTAL of 120. On a once-per-warehouse entry in an append-only ledger
+  that overstatement is permanent short of a void — and S04 is the session that types these
+  in. Now "Good — undamaged" / "Damaged — as well as the good", plus "The opening total is
+  good + damaged." Pre-existing wording on the item form; inherited by the new sheet.
+- 🔴 **The opening sheet could double a yard's stock, and the server would not stop it.**
+  "Nothing here yet" was checked at paint but not at confirm, so a receipt landing during the
+  dwell was overwritten. `opening_done` is set ONLY by an OPENING, so a key that merely has a
+  receipt against it is still "opening not done" server-side and the OPENING commits on top.
+  Re-checked at confirm.
+- **Receive and Issue failed silently** when the new warehouse guard rejected: no toast, and
+  the button re-enabled. A yard worker would tap, and tap again, forever. Both now self-heal
+  the field on paint AND say what happened.
+- The damage picker could filter out the very yard the form was set to (`allow` ran before
+  the `current` exception). Damage had no `good <= 0` guard, unlike Move.
+- The item form's OPENING was the sixth enqueue path and had been missed by the warehouse
+  guard — five of six, not five of five.
+- Closing a warehouse merged it straight back as OPEN if the response omitted the record, and
+  reset `rev` to 1 so the next edit took an untrue `STALE_FACILITY_REV`.
+- The damage and move re-checks left the confirmation sheet up on the refusal path.
+
+### New guard rails
+
+- `scripts/verify-facilities.mjs` (`npm run verify:facilities`) — **34 checks**, real Chrome,
+  seeded warehouse data. The load-bearing one: YARD A holds 35 good, YARD B 260, so issuing
+  the across-yard **300 from YARD A is refused** and 35 is allowed. Every seeded figure is
+  chosen so the aggregate and both yards are three DIFFERENT numbers — a test where two
+  coincide passes just as happily against code showing the wrong one. Also carries the
+  44px/16px rules measured with the chip row up and the picker open, and the regression check
+  for the empty-yard Receive button.
+- `scripts/serve.mjs` (`npm run serve`) — serves `docs/` locally. `verify-mobile`,
+  `verify-flows` and `shoot` all defaulted to the LIVE Pages URL, so testing a `docs/` change
+  meant pushing a build to Harish's phone to find out whether it was any good. They all take
+  a URL as argv[2]; this is the URL to give them.
+- `test/outbox.test.mjs` — 15 tests over the now-pure `entryKeys` / `selectBatch`.
+
+### Verified
+
+86/86 unit (was 71) · gate green **including check 10** · harness identical to the S02
+baseline once timestamps and generated txn ids are normalised · 18/18 layout · 8/8 flows ·
+34/34 warehouse UI. All browser checks run against `http://127.0.0.1:8787/`, not the live
+site. Nothing deployed, no data wiped, no clasp run.
+
+### Carry into S04
+
+- 🔴 **`balKey` in `docs/lib/deltas.js` (and its twin `balKey_` in `gas/Balance.js`) still use
+  `String(v || '')`, so `balKey('YARD A', 0)` is `'YARD A|'`** — the numeric-SKU bug of commit
+  `4856d64`, inside the one function whose job is a stable key. Nothing reaches it today
+  because every caller pre-normalises (`enqueue` now does too), and `mergeBalances` is fed
+  server rows that are already `normSku_`'d. **Left alone deliberately: it is a twin contract
+  and S03 was told not to change the server.** Fix BOTH copies in the same commit or they
+  drift, which is worse than the bug.
+- `scripts/shoot.mjs` still seeds the cache key `balances` — S02 renamed it `balances_v2`, so
+  shoot has been seeding nothing since. It also seeds bare-SKU balances with no facility.
+- `smoke.mjs` (7 sites) and `verify-numeric-sku.mjs` still send no facility, as PLAN says.
+- The app treats `SCHEMA_MISMATCH` as an ordinary retryable error today. PLAN A7 wants it
+  worded as "server updating, your entries are safe".
+- **Deploy order matters**: `gas/` and `docs/` must go together now. Pushing `docs/` alone
+  gives a phone a warehouse picker with nothing in it; pushing `gas/` alone refuses every
+  entry. Check 10 no longer blocks either.
+
+---
+
 ## S04 — "Migration wipe + full live verification"
 
 Model: Opus 1M · Plan mode: NO · Agent teams: YES — Verifier×2 (server / device)
@@ -235,4 +369,7 @@ Bundle:
   chasing platform flakiness that looked like a regression.
 - Deploy: `npm run push` then `clasp update-deployment ... AKfycby_s3R6...` into the
   EXISTING id. Never mint a new one.
-- Then Harish enters opening stock per warehouse.
+- Then Harish enters opening stock per warehouse — the screen for this was built in S03:
+  stock screen → pick the warehouse chip → tap the item → **Set opening stock**. It appears
+  only where that yard has nothing recorded yet; a second attempt is refused by the server's
+  `opening_done` flag (`OPENING_EXISTS`).

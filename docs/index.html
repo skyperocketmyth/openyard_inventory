@@ -216,6 +216,23 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
   background:var(--card);border:2px solid var(--border);color:var(--muted);
   font-size:var(--fs-sm);font-weight:var(--fw-8);white-space:nowrap;display:flex;align-items:center}
 .chip-filter[aria-pressed="true"]{background:var(--rsa-blue);border-color:var(--rsa-blue);color:#fff}
+/* The warehouse chip row. Same metrics as .sorts on purpose — both are
+   horizontally scrolling filter rows and both must clear the 44px tap target
+   the layout checker enforces. */
+.facbar{display:flex;gap:var(--s-2);overflow-x:auto;padding-bottom:var(--s-2);
+  margin-bottom:var(--s-3);scrollbar-width:none}
+.facbar::-webkit-scrollbar{display:none}
+.chip-filter.is-closed{border-style:dashed;color:var(--label)}
+.chip-filter.is-closed[aria-pressed="true"]{background:var(--label);border-color:var(--label)}
+/* The yard name on a balance row / movement line. Never omitted when more than
+   one yard is in play: two yards holding one item are otherwise two identical
+   unlabelled rows. */
+.yard-tag{font-size:var(--fs-xs);font-weight:var(--fw-8);letter-spacing:.04em;
+  color:var(--sea);background:var(--sea-tint);padding:2px 8px;border-radius:var(--r-pill);
+  white-space:nowrap}
+.fac-note{font-size:var(--fs-sm);font-weight:var(--fw-8);color:var(--rsa-blue);
+  background:var(--rsa-blue-tint);border-radius:var(--r-md);padding:var(--s-3);
+  margin-bottom:var(--s-4);display:flex;align-items:center;gap:var(--s-2)}
 
 /* ---------- tab bar ---------- */
 .tabbar{position:fixed;bottom:0;left:0;right:0;height:calc(var(--nav-h) + var(--safe-b));
@@ -357,6 +374,10 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 <section class="screen" id="scr-balance">
   <button class="banner banner-err" id="failBanner" hidden></button>
   <div class="banner banner-info" id="staleBanner" hidden></div>
+  <!-- One chip per warehouse, plus All. Rendered from the facility list, so it
+       stays empty (and hidden) on a build talking to a server that has no
+       warehouses yet. -->
+  <div class="facbar" id="balFacs" hidden></div>
   <div class="search">
     <span class="ico">🔍</span>
     <input id="balSearch" type="search" inputmode="search" placeholder="Search SKU or description"
@@ -376,6 +397,13 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 
 <!-- ===================== S2 RECEIVE ===================== -->
 <section class="screen" id="scr-receive">
+  <div class="field">
+    <span class="field-label eyebrow">Warehouse <span class="req">*</span></span>
+    <button class="item-select" id="rcvFac" data-fac-picker="rcv">
+      <span class="row-main"><span class="placeholder">Tap to choose warehouse</span></span>
+    </button>
+    <div class="field-error" id="rcvFacErr"></div>
+  </div>
   <div class="field">
     <span class="field-label eyebrow">Item <span class="req">*</span></span>
     <button class="item-select" id="rcvItem" data-picker="rcv">
@@ -433,6 +461,13 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 
 <!-- ===================== S3 ISSUE ===================== -->
 <section class="screen" id="scr-issue">
+  <div class="field">
+    <span class="field-label eyebrow">Warehouse <span class="req">*</span></span>
+    <button class="item-select" id="issFac" data-fac-picker="iss">
+      <span class="row-main"><span class="placeholder">Tap to choose warehouse</span></span>
+    </button>
+    <div class="field-error" id="issFacErr"></div>
+  </div>
   <div class="field">
     <span class="field-label eyebrow">Item <span class="req">*</span></span>
     <button class="item-select" id="issItem" data-picker="iss">
@@ -521,6 +556,7 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 <script type="module">
 import { configure, apiPost, ApiError, probe } from './lib/api.js';
 import { prefs, cacheMeta } from './lib/idb.js';
+import { normSku, normFacility } from './lib/deltas.js';
 import * as OB from './lib/outbox.js';
 import * as SY from './lib/sync.js';
 
@@ -538,13 +574,193 @@ const ui = {
   balSearch: '', balSort: prefs.getSort(),
   itemSearch: '',
   rcvSku: null, issSku: null,
+  // The warehouse each ENTRY screen is recording against. Required (5.A) and
+  // never pre-filled (6.B): entering Receive or Issue from the tab bar clears
+  // it, so nobody records a truck against whichever yard they happened to be
+  // looking at earlier. It is only carried in when the action was STARTED from
+  // a yard-specific place, which is the exception 10.A asks for.
+  rcvFacility: '', issFacility: '',
   pickerTarget: null,
   usersLoaded: false,      // distinguishes "no names" from "not loaded yet"
   sheetStack: []
 };
 
-// S03 sets this from the facility picker. Until then every projected figure reads 0.
+/**
+ * The warehouse the STOCK SCREEN is showing. `''` is the "All warehouses" view.
+ *
+ * Set by the chip row above the stock list, and by nothing else. It is the
+ * screen's filter, NOT an ambient "current yard" that other screens read: an
+ * entry screen reads its OWN `ui.rcvFacility` / `ui.issFacility`, and every
+ * sheet takes the yard as an explicit argument.
+ *
+ * That distinction is the whole of finding F10. If actions read a global that
+ * the stock screen also writes, then "All warehouses" — which has no single
+ * yard — silently gates an Issue on the ACROSS-YARD total, and the app happily
+ * lets someone issue 300 from a yard holding 40 because the other yard holds
+ * 260. The All view therefore offers no actions at all; it makes you pick a
+ * yard first, and the yard you picked is passed down by hand from there.
+ */
 let uiFacility = '';
+
+/* ================= warehouses ================= */
+
+/** The yards a new entry may be recorded against. Closed ones are not offered. */
+function activeFacilities() {
+  return SY.state.facilities.filter(f => f.active !== false);
+}
+
+/** True when this yard exists but has been closed. Movements to it still post. */
+function isClosedFacility(name) {
+  const f = SY.facilityByName(name);
+  return !!f && f.active === false;
+}
+
+/**
+ * The yard name if the server would recognise it, otherwise `''`.
+ *
+ * A CLOSED yard passes — 11.A accepts a movement at one and flags it. What this
+ * rejects is a name that is not in the warehouse list at all, which is not
+ * hypothetical: a balance row names its yard, the warehouse list is a separate
+ * read, and the Sheet is hand-editable on an ANYONE_ANONYMOUS deployment, so a
+ * yard deleted by hand leaves stock rows pointing at a warehouse that no longer
+ * exists. Without this the app paints the full action set for that yard, every
+ * `!facility` guard passes because the string is truthy, and the entry is
+ * enqueued — only for the server to answer UNKNOWN_FACILITY, non-retryable. A
+ * real physical movement then sits in the failures list carrying a message a
+ * yard worker has no way to act on.
+ *
+ * Checked at the point of ACTION, not only at paint: the warehouse list is
+ * refreshed in the background while a form is open.
+ */
+function knownFacility(name) {
+  const fac = normFacility(name);
+  return fac && SY.facilityByName(fac) ? fac : '';
+}
+
+/**
+ * Set the warehouse the stock screen is filtered to.
+ *
+ * A yard that disappears from the list (closed by a supervisor on another
+ * phone, or a cache restored from a build that had different yards) must not
+ * leave the screen stuck on a filter that matches nothing, so an unknown name
+ * falls back to All.
+ */
+function setUiFacility(name) {
+  const fac = normFacility(name);
+  uiFacility = fac && SY.facilityByName(fac) ? fac : '';
+  return uiFacility;
+}
+
+/**
+ * The warehouse picker. Same sheet, same search box and the same row metrics as
+ * the item picker — a yard worker should not have to learn two list controls.
+ *
+ * @param {{title?:string, current?:string, exclude?:string, allow?:string[],
+ *           onPick:function}} o
+ *   `exclude` drops one yard from the list; `allow`, when given, is the set of
+ *   yards the caller can actually act on (the `current` one always survives).
+ *
+ * It does NOT close the sheet before calling `onPick` — that is the caller's
+ * job, and getting it wrong is a bug that has shipped here before. There is
+ * only ever ONE sheet: opening this picker REPLACES whatever sheet was on
+ * screen, so a caller that is itself a sheet must re-open itself from `onPick`
+ * rather than expect to still be there. And a caller that is a SCREEN must
+ * close, because nothing else will. `closeSheet()` immediately followed by
+ * `openSheet()` is the specific thing to avoid: close runs `history.back()`,
+ * open pushes a state, and the two race — which is exactly how "Change name"
+ * was silently broken and why scripts/verify-flows.mjs exists.
+ */
+async function openFacilityPicker(o) {
+  const exclude = normFacility(o.exclude || '');
+  const current = normFacility(o.current || '');
+  openSheet({
+    title: o.title || 'Choose warehouse',
+    search: `<div class="search" style="margin-bottom:var(--s-3)">
+        <span class="ico">🔍</span>
+        <input id="fpSearch" type="search" inputmode="search" autocomplete="off" spellcheck="false"
+          autocapitalize="characters" placeholder="Search warehouse">
+      </div>`,
+    body: '<div id="fpList"></div>'
+  });
+
+  const paint = async () => {
+    const q = ($('fpSearch')?.value || '').trim().toUpperCase();
+    const bals = await SY.projected();
+    // A yard that has been CLOSED is normally not offered. The one exception is
+    // the yard already selected on this form: hiding it would make the screen
+    // show a warehouse the picker then denies exists, and 11.A is explicit that
+    // a movement at a closed yard is accepted rather than refused.
+    const list = SY.state.facilities.filter(f =>
+      f.facility !== exclude &&
+      // `allow`, when given, is the set of yards the CALLER can actually act
+      // on. The damage sheet passes the yards holding good stock of this item:
+      // offering one that holds none replaces the sheet with a form whose limit
+      // is zero and whose submit can never enable — and the sheet it replaced
+      // is gone, because there is only ever one.
+      // `|| f.facility === current` on BOTH filters. Without it on `allow`,
+      // the yard this form is already set to can be filtered out of its own
+      // picker — the ✓ row simply absent — which is the stranding this option
+      // exists to prevent, reappearing one level down.
+      (!o.allow || o.allow.includes(f.facility) || f.facility === current) &&
+      (f.active !== false || f.facility === current) &&
+      (!q || f.facility.includes(q) || String(f.description || '').toUpperCase().includes(q)));
+
+    const rows = list.map(f => {
+      // How much is standing at this yard, across every item. Choosing a yard
+      // blind is how stock gets recorded in the wrong place.
+      const here = bals.filter(b => b.facility === f.facility);
+      const tot = here.reduce((s, b) => s + b.total, 0);
+      const closed = f.active === false;
+      return `<button class="row" data-fac="${esc(f.facility)}">
+        <span class="row-main">
+          <span class="row-sku">${esc(f.facility)}${f.facility === current ? ' ✓' : ''}</span>
+          <span class="row-desc">${esc(f.description || '')}${closed ? ' · closed' : ''}</span>
+        </span>
+        <span class="row-num"><span class="v" style="font-size:var(--fs-md)">${n(tot)}</span>
+          <span class="eyebrow" style="display:block">in yard</span></span>
+      </button>`;
+    }).join('');
+
+    $('fpList').innerHTML = list.length ? rows : (
+      SY.state.facilities.length
+        ? `<div class="empty"><span class="g">🔍</span>
+             <h3>No warehouse matches “${esc(q)}”</h3></div>`
+        : `<div class="empty"><span class="g">🏗</span>
+             <h3>No warehouses yet</h3>
+             <p>Stock has to live somewhere. Add your first warehouse before recording anything.</p>
+             <button class="btn" id="fpAdd">+ Add a warehouse</button></div>`);
+
+    for (const b of $('fpList').querySelectorAll('[data-fac]')) {
+      b.onclick = () => o.onPick(b.dataset.fac);
+    }
+    if ($('fpAdd')) $('fpAdd').onclick = () => openFacilityForm(null);
+  };
+  $('fpSearch').oninput = debounce(paint, 150);
+  await paint();
+}
+
+/**
+ * One item's stock summed across EVERY warehouse.
+ *
+ * Read-only by contract. Nothing that changes stock may be gated on this — see
+ * the note on `uiFacility`. It exists for the All view's headline figure and
+ * for the per-yard breakdown that view offers instead of buttons.
+ */
+async function aggregateFor(sku) {
+  const key = normSku(sku);
+  const rows = (await SY.projected()).filter(r => r.sku === key);
+  const agg = { sku: key, total: 0, damaged: 0, good: 0, pending: 0, lastTxnTs: '', at: [] };
+  for (const r of rows) {
+    agg.total += r.total;
+    agg.damaged += r.damaged;
+    agg.good += r.good;
+    agg.pending += r.pending || 0;
+    if (String(r.lastTxnTs) > agg.lastTxnTs) agg.lastTxnTs = String(r.lastTxnTs || '');
+    agg.at.push(r);
+  }
+  agg.at.sort((a, b) => b.total - a.total || (a.facility < b.facility ? -1 : 1));
+  return agg;
+}
 
 /* ================= small helpers ================= */
 const n = v => new Intl.NumberFormat('en-US').format(v);
@@ -672,7 +888,25 @@ async function renderSync() {
 /* ================= navigation ================= */
 const TITLES = { balance:'Balance', receive:'Receive', issue:'Issue', items:'Items', name:'' };
 
-function show(screen) {
+/**
+ * @param {string} screen
+ * @param {string} [facility]  the yard to carry ONTO an entry screen (10.A)
+ *
+ * Navigating to Receive or Issue CLEARS the chosen warehouse unless the caller
+ * names one. Clearing by default, here, rather than at each navigation site, is
+ * deliberate and was a bug first: the version that cleared only in the tab-bar
+ * handler left `show('receive')` from the stock screen's own "Receive stock"
+ * empty-state button carrying the yard from whatever action was taken last. On
+ * a yard the app had just described as empty, the form opened pre-filled with a
+ * DIFFERENT yard, one tap from filing a receipt against it.
+ *
+ * So: a route that should carry a yard must say so (`show('receive', fac)`);
+ * every other route gets 6.B's fresh ask for free, including routes nobody has
+ * written yet.
+ */
+function show(screen, facility) {
+  if (screen === 'receive') ui.rcvFacility = normFacility(facility || '');
+  if (screen === 'issue') ui.issFacility = normFacility(facility || '');
   ui.screen = screen;
   for (const el of document.querySelectorAll('.screen')) el.classList.remove('active');
   $(`scr-${screen}`).classList.add('active');
@@ -689,6 +923,10 @@ function show(screen) {
 }
 
 for (const t of document.querySelectorAll('.tab')) {
+  // No facility argument, so `show` clears it — 6.B. The item is deliberately
+  // NOT cleared: several trucks of the same SKU arrive in a row, and that
+  // convenience costs nothing because the item is named on screen in large
+  // type, while a yard once chosen is easy to stop reading.
   t.onclick = () => show(t.dataset.screen);
 }
 
@@ -818,6 +1056,13 @@ $('userChip').onclick = () => {
       <button class="row" id="acChange"><span class="row-main">
         <span class="row-sku" style="font-weight:var(--fw-6)">Change name</span></span>
         <span class="chev">›</span></button>
+      <button class="row" id="acFacs"><span class="row-main">
+        <span class="row-sku" style="font-weight:var(--fw-6)">Manage warehouses</span>
+        <span class="row-desc">${SY.state.facilities.length
+          ? `${activeFacilities().length} open${SY.state.facilities.length > activeFacilities().length
+              ? ` · ${SY.state.facilities.length - activeFacilities().length} closed` : ''}`
+          : 'None yet'}</span></span>
+        <span class="chev">›</span></button>
       <button class="row" id="acSync"><span class="row-main">
         <span class="row-sku" style="font-weight:var(--fw-6)">Sync now</span></span>
         <span class="chev">›</span></button>
@@ -842,8 +1087,176 @@ $('userChip').onclick = () => {
       }
     });
   };
+  $('acFacs').onclick = () => openFacilitiesSheet();
   $('acSync').onclick = async () => { closeSheet(); await doRefresh(); };
 };
+
+/* ================= manage warehouses ================= */
+
+/**
+ * Add and edit warehouses. There is NO delete and NO rename, and the UI must
+ * say so at creation rather than at the point someone tries (9.A): every ledger
+ * row and every balance is keyed on the NAME, so a rename orphans the history
+ * and a delete leaves stock with nowhere to live. A yard that closes is marked
+ * inactive — it drops out of the pickers while its stock and history stay put.
+ *
+ * Online only. There is no offline queue for master data: a yard invented on a
+ * phone that never uploads would let entries be recorded against a warehouse
+ * the server will refuse, and those entries are real movements.
+ */
+function openFacilitiesSheet() {
+  const list = SY.state.facilities;
+  openSheet({
+    title: 'Warehouses',
+    body: list.length ? list.map(f => `
+      <button class="row" data-edit-fac="${esc(f.facility)}">
+        <span class="row-main">
+          <span class="row-sku">${esc(f.facility)}</span>
+          <span class="row-desc">${esc(f.description || 'No description')}</span>
+        </span>
+        <span class="chip ${f.active === false ? 'chip-dmg' : 'chip-good'}">${
+          f.active === false ? 'Closed' : 'Open'}</span>
+        <span class="chev">›</span>
+      </button>`).join('')
+      : `<div class="empty"><span class="g">🏗</span><h3>No warehouses yet</h3>
+         <p>Add the yards you store stock in. Every entry is recorded against one.</p></div>`,
+    foot: `<button class="btn" id="facAdd">+ Add warehouse</button>`
+  });
+  for (const b of $('sheetBody').querySelectorAll('[data-edit-fac]')) {
+    b.onclick = () => openFacilityForm(b.dataset.editFac);
+  }
+  $('facAdd').onclick = () => openFacilityForm(null);
+}
+
+function openFacilityForm(existingName) {
+  const f = existingName ? SY.facilityByName(existingName) : null;
+  let active = f ? f.active !== false : true;
+
+  openSheet({
+    title: f ? 'Edit warehouse' : 'Add warehouse',
+    body: `
+      <div class="field">
+        <label class="field-label eyebrow" for="ffName">Warehouse name <span class="req">*</span></label>
+        <input class="field-input" id="ffName" type="text" autocapitalize="characters"
+          autocomplete="off" spellcheck="false" maxlength="40" enterkeyhint="next"
+          value="${esc(f?.facility || '')}" ${f ? 'readonly' : ''}>
+        ${f
+          ? '<div class="field-help">The name can’t be changed — every movement ever recorded is filed under it.</div>'
+          : `<div class="note-info" style="margin-top:var(--s-2)">
+               <b>This name cannot be changed later.</b> Every receipt, issue and move is
+               filed under it forever. Type it the way you want it to read.</div>`}
+        <div class="field-error" id="ffNameErr"></div>
+      </div>
+      <div class="field">
+        <label class="field-label eyebrow" for="ffDesc">Description (optional)</label>
+        <input class="field-input" id="ffDesc" type="text" autocapitalize="sentences"
+          maxlength="120" enterkeyhint="done" value="${esc(f?.description || '')}">
+        <div class="field-error" id="ffDescErr"></div>
+      </div>
+      ${f ? `
+      <div class="field">
+        <span class="field-label eyebrow">Status</span>
+        <div class="tiles" id="ffActive">
+          <button class="tile" data-active="1" aria-pressed="${String(active)}">Open</button>
+          <button class="tile" data-active="0" aria-pressed="${String(!active)}">Closed</button>
+        </div>
+        <div class="field-help">A closed warehouse stops appearing in the pickers.
+          Its stock and its history stay exactly where they are, and an entry already
+          waiting to upload is still accepted.</div>
+      </div>` : ''}`,
+    foot: `<button class="btn" id="ffSave" disabled>${f ? 'Save changes' : 'Add warehouse'}</button>`
+  });
+
+  if (f) {
+    for (const t of $('ffActive').querySelectorAll('[data-active]')) {
+      t.onclick = () => {
+        active = t.dataset.active === '1';
+        for (const o of $('ffActive').querySelectorAll('[data-active]')) {
+          o.setAttribute('aria-pressed', String((o.dataset.active === '1') === active));
+        }
+      };
+    }
+  }
+
+  // Kept in step with upsertFacility_ in gas/Ledger.js. '|' is refused
+  // separately below so the message can say why — it is the balance-key
+  // separator, which is a data rule and not a typography one.
+  const NAME_OK = /^[A-Z0-9][A-Z0-9 \-_.\/&(),'+#]{1,39}$/;
+
+  function validate() {
+    const name = ($('ffName').value || '').trim().toUpperCase();
+    const err = $('ffNameErr');
+    err.textContent = '';
+    $('ffName').classList.remove('is-invalid');
+    let ok = true;
+    if (f) { $('ffSave').disabled = false; return; }
+    if (!name) ok = false;
+    else if (name.includes('|')) {
+      err.textContent = 'A warehouse name cannot contain the | character.';
+      $('ffName').classList.add('is-invalid'); ok = false;
+    } else if (!NAME_OK.test(name)) {
+      err.textContent = "Use letters, numbers, spaces and - _ . / & ( ) , ' + # only, "
+        + '2 to 40 characters.';
+      $('ffName').classList.add('is-invalid'); ok = false;
+    } else if (SY.state.facilities.some(x => x.facility === name)) {
+      err.textContent = `${name} already exists.`;
+      $('ffName').classList.add('is-invalid'); ok = false;
+    }
+    $('ffSave').disabled = !ok;
+  }
+  $('ffName').addEventListener('input', validate);
+  validate();
+
+  $('ffSave').onclick = async () => {
+    const btn = $('ffSave');
+    const name = ($('ffName').value || '').trim().toUpperCase();
+    const description = ($('ffDesc').value || '').trim();
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span> Saving…';
+    try {
+      // `active` is only ever sent when editing. On create the server ignores
+      // it and always opens the yard; on edit an ABSENT field means "leave it",
+      // and `description` must be sent as a string or the server wipes it.
+      const body = f
+        ? { facility: name, description, active, rev: f.rev, recordedBy: prefs.getUser() }
+        : { facility: name, description, recordedBy: prefs.getUser() };
+      const res = await apiPost('upsertFacility', body);
+      // The fallback mirrors what was SENT, never a hardcoded open-at-rev-1.
+      // Hardcoding it meant that closing a yard, on a response that happened to
+      // omit the record, merged it straight back as OPEN — directly after a
+      // toast saying it had saved — and reset `rev` to 1, so the next edit took
+      // a STALE_FACILITY_REV ("someone else changed it") that was untrue and
+      // could not be cleared without a refresh.
+      const saved = (res.data && res.data.facility) ? res.data : {
+        facility: name,
+        description,
+        active: f ? active : true,          // create always opens the yard
+        rev: f ? Number(f.rev) + 1 : 1
+      };
+      await SY.mergeFacility(saved);
+      // A yard that has just been closed must stop filtering the stock screen.
+      // An entry screen's selection is deliberately NOT cleared: 11.A accepts a
+      // movement at a closed yard and flags it, and paintFacilitySelect already
+      // says so on screen.
+      setUiFacility(uiFacility);
+      closeSheet();
+      toast(f ? `${name} saved.` : `Warehouse ${name} added.`);
+      await render();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = f ? 'Save changes' : 'Add warehouse';
+      if (err instanceof ApiError && err.code === 'UNKNOWN_ACTION') {
+        toast('This server has not been updated for warehouses yet.', 'error');
+      } else if (err instanceof ApiError &&
+          (err.code === 'DUPLICATE_FACILITY' || err.code === 'BAD_REQUEST')) {
+        $('ffNameErr').textContent = err.message;
+        $('ffName').classList.add('is-invalid');
+      } else {
+        toast(err.message || 'Could not save the warehouse.', 'error');
+      }
+    }
+  };
+}
 
 /* ================= S4 balance ================= */
 function matches(item, q) {
@@ -855,13 +1268,62 @@ function matches(item, q) {
   return q.toUpperCase().split(/\s+/).filter(Boolean).every(tok => desc.includes(tok));
 }
 
+/**
+ * The warehouse chip row above the stock list: All, then one chip per yard.
+ *
+ * Hidden entirely while there are no warehouses — an "All" chip on its own
+ * filters nothing and just eats a row of screen on a phone.
+ */
+function renderFacilityChips() {
+  const bar = $('balFacs');
+  const facs = SY.state.facilities;
+  // A closed yard still appears IF it is the one selected, so the screen can
+  // never be filtered to something the chip row does not show.
+  const shown = facs.filter(f => f.active !== false || f.facility === uiFacility);
+  if (!shown.length) { bar.hidden = true; bar.innerHTML = ''; return; }
+  bar.hidden = false;
+  bar.innerHTML = `<button class="chip-filter" data-fac=""
+      aria-pressed="${String(!uiFacility)}">All warehouses</button>`
+    + shown.map(f => `<button class="chip-filter${f.active === false ? ' is-closed' : ''}"
+        data-fac="${esc(f.facility)}" aria-pressed="${String(f.facility === uiFacility)}"
+        >${esc(f.facility)}${f.active === false ? ' · closed' : ''}</button>`).join('');
+  for (const c of bar.querySelectorAll('[data-fac]')) {
+    c.onclick = () => { setUiFacility(c.dataset.fac); renderBalance(); };
+  }
+}
+
 async function renderBalance() {
-  // S03: `rows` is one row per (facility, sku), so the same item at two yards
-  // renders as two visually identical lines with no yard label. Known and
-  // accepted for S02 — the fix (a yard chip on each row, or filtering to
-  // `uiFacility`) goes here once the picker exists.
-  const rows = await SY.projected();
+  const all = await SY.projected();
   const q = ui.balSearch.trim();
+
+  // A yard selected on a previous render may have been closed or removed since.
+  setUiFacility(uiFacility);
+  renderFacilityChips();
+
+  // One row per (facility, sku). In a yard, show that yard's rows. In the All
+  // view, sum each item across yards into ONE row — two yards holding the same
+  // item otherwise render as two identical unlabelled lines.
+  //
+  // The All rows carry `facility: ''` deliberately. They are not a yard, and
+  // every action path checks for exactly that before offering to do anything.
+  let rows;
+  if (uiFacility) {
+    rows = all.filter(r => r.facility === uiFacility);
+  } else {
+    const byItem = new Map();
+    for (const r of all) {
+      const cur = byItem.get(r.sku) ||
+        { facility: '', sku: r.sku, total: 0, damaged: 0, good: 0, pending: 0, lastTxnTs: '', yards: 0 };
+      cur.total += r.total;
+      cur.damaged += r.damaged;
+      cur.good += r.good;
+      cur.pending += r.pending || 0;
+      if (r.total !== 0 || r.damaged !== 0) cur.yards += 1;
+      if (String(r.lastTxnTs) > cur.lastTxnTs) cur.lastTxnTs = String(r.lastTxnTs || '');
+      byItem.set(r.sku, cur);
+    }
+    rows = [...byItem.values()].sort((a, b) => (a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0));
+  }
 
   const enriched = rows.map(r => {
     const item = SY.itemBySku(r.sku);
@@ -878,9 +1340,26 @@ async function renderBalance() {
 
   const tot = sorted.reduce((s, r) => s + r.total, 0);
   const dmg = sorted.reduce((s, r) => s + r.damaged, 0);
+  const list = $('balList');
+  // Before the headline, not after it. A phone can hold cached balances while
+  // its warehouse list is empty, and painting the summary first put a confident
+  // "All warehouses · total 1,240" directly above "No warehouses yet".
+  if (!SY.state.facilities.length) {
+    $('balSummary').innerHTML = '';
+    $('balCount').textContent = '';
+    list.innerHTML = `<div class="empty"><span class="g">🏗</span>
+      <h3>No warehouses yet</h3>
+      <p>Add the yards you store stock in. Every receipt, issue and move is
+         recorded against one of them.</p>
+      <button class="btn" id="goFacs">+ Add a warehouse</button></div>`;
+    $('goFacs').onclick = () => openFacilitiesSheet();
+    return;
+  }
+
+  const scope = uiFacility ? esc(uiFacility) : 'All warehouses';
   $('balSummary').innerHTML = sorted.length ? `
     <div class="summary">
-      <div class="eyebrow">${q ? 'Matching total' : 'Yard total'}</div>
+      <div class="eyebrow">${q ? `Matching total · ${scope}` : `${scope} · total`}</div>
       <div class="big">${n(tot)}</div>
       <div class="summary-chips">
         <span class="chip chip-good">✓ ${n(tot - dmg)} good</span>
@@ -895,7 +1374,6 @@ async function renderBalance() {
     ? (q ? `${sorted.length} of ${rows.length} match “${q}”` : `${sorted.length} items in stock`)
     : '';
 
-  const list = $('balList');
   if (!SY.state.items.length) {
     list.innerHTML = `<div class="empty"><span class="g">📦</span>
       <h3>No stock yet</h3><p>Add your items, then record what's in the yard.</p>
@@ -916,7 +1394,8 @@ async function renderBalance() {
   }
 
   list.innerHTML = sorted.map(r => `
-    <button class="row bal-row ${r.damaged > 0 ? 'has-dmg' : 'all-good'}" data-sku="${esc(r.sku)}">
+    <button class="row bal-row ${r.damaged > 0 ? 'has-dmg' : 'all-good'}"
+      data-sku="${esc(r.sku)}" data-fac="${esc(uiFacility)}">
       <span class="bal-top">
         <span class="row-main">
           <span class="row-sku">${esc(r.sku)}</span>
@@ -929,6 +1408,9 @@ async function renderBalance() {
         <span class="chev">›</span>
       </span>
       <span class="bal-chips">
+        ${uiFacility
+          ? `<span class="yard-tag">${esc(uiFacility)}</span>`
+          : (r.yards > 1 ? `<span class="yard-tag">at ${r.yards} warehouses</span>` : '')}
         <span class="chip chip-good">✓ ${n(r.good)} good</span>
         ${r.damaged > 0
           ? `<span class="chip chip-dmg">⚠ ${n(r.damaged)} damaged</span>`
@@ -939,7 +1421,12 @@ async function renderBalance() {
     </button>`).join('');
 
   for (const b of list.querySelectorAll('[data-sku]')) {
-    b.onclick = () => openItemDetail(b.dataset.sku);
+    // `data-fac` is '' in the All view, and openItemDetail treats that as the
+    // read-only across-yards sheet. The facility travels WITH the row rather
+    // than being read back off `uiFacility` at click time, so a chip tapped
+    // between the render and the tap cannot redirect an action to a yard the
+    // user never saw.
+    b.onclick = () => openItemDetail(b.dataset.sku, b.dataset.fac);
   }
 }
 
@@ -961,15 +1448,105 @@ for (const o of $('balSorts').querySelectorAll('[data-sort]')) {
 }
 
 /* ================= item detail ================= */
-async function openItemDetail(sku) {
+
+/**
+ * @param {string} sku
+ * @param {string} facility  '' means the ALL-warehouses view
+ *
+ * The split is the F10 defence and it is structural, not a check that could be
+ * forgotten. The across-yards sheet carries NO Receive / Issue / Damage / Move
+ * buttons at all: it shows where the stock actually is and makes you tap a
+ * yard, which re-opens this sheet with that yard's figures. So there is no code
+ * path anywhere in the app where an action is enabled by an across-yard total.
+ * Adding a button to the aggregate sheet would be the bug; there is nothing to
+ * accidentally leave un-gated.
+ */
+async function openItemDetail(sku, facility) {
+  const fac = normFacility(facility);
+  if (!fac) return openItemAllYards(sku);
+  return openItemAtFacility(sku, fac);
+}
+
+/** Across every warehouse. Read-only by construction — see openItemDetail. */
+async function openItemAllYards(sku) {
   const item = SY.itemBySku(sku);
-  const b = await SY.projectedFor(uiFacility, sku);
+  const agg = await aggregateFor(sku);
+  // A row whose facility is blank is pre-warehouse data (schema 1). It is shown
+  // rather than hidden — losing stock quietly is worse than an obviously odd
+  // row a supervisor can act on — but it is not a place you can record against.
+  const lines = agg.at.filter(r => r.total !== 0 || r.damaged !== 0 || r.pending);
   openSheet({
     title: sku,
     body: `
       <p style="color:var(--muted);font-size:var(--fs-sm)">
         ${esc(item?.description || '')}${item?.uom ? ' · ' + esc(item.uom) : ''}
       </p>
+      <div class="equation">
+        <span class="term"><span class="v">${n(agg.total)}</span>
+          <span class="eyebrow" style="display:block">total</span></span>
+        <span class="op">=</span>
+        <span class="term"><span class="v" style="color:var(--good-ink)">${n(agg.good)}</span>
+          <span class="eyebrow" style="display:block">good</span></span>
+        <span class="op">+</span>
+        <span class="term"><span class="v" style="color:var(--rsa-red)">${n(agg.damaged)}</span>
+          <span class="eyebrow" style="display:block">damaged</span></span>
+      </div>
+      <div class="fac-note">🏗 <span>Across all warehouses. Choose one below to receive,
+        issue, move or record damage.</span></div>
+      <div class="eyebrow" style="margin-bottom:var(--s-2)">Where it is</div>
+      <div id="dtYards">${lines.length ? lines.map(r => r.facility ? `
+        <button class="row" data-yard="${esc(r.facility)}">
+          <span class="row-main">
+            <span class="row-sku">${esc(r.facility)}${isClosedFacility(r.facility) ? ' · closed' : ''}</span>
+            <span class="row-desc">✓ ${n(r.good)} good${r.damaged > 0 ? ` · ⚠ ${n(r.damaged)} damaged` : ''}${r.pending ? ` · ⟳ ${r.pending} pending` : ''}</span>
+          </span>
+          <span class="row-num"><span class="v" style="font-size:var(--fs-lg)">${n(r.total)}</span></span>
+          <span class="chev">›</span>
+        </button>` : `
+        <div class="row" style="border-left:3px solid var(--rsa-red)">
+          <span class="row-main">
+            <span class="row-sku">No warehouse recorded</span>
+            <span class="row-desc">${n(r.total)} total · recorded before warehouses were added</span>
+          </span>
+        </div>`).join('')
+        : '<p style="color:var(--muted);font-size:var(--fs-sm)">Nothing in stock anywhere.</p>'}</div>
+      <div class="eyebrow" style="margin-top:var(--s-6)">Recent movements · all warehouses</div>
+      <div id="dtMoves"><div class="skel"></div></div>`
+  });
+  for (const b of $('dtYards').querySelectorAll('[data-yard]')) {
+    b.onclick = () => openItemAtFacility(sku, b.dataset.yard);
+  }
+  loadMoves(sku, '');
+}
+
+/** One warehouse. Every action here is gated on THIS yard's good stock. */
+async function openItemAtFacility(sku, facility) {
+  // The yard here arrives off a BALANCE row (`data-yard`, `data-fac`), which is
+  // a different read from the warehouse list. If the two disagree, refuse to
+  // paint an action set for a yard the server will not accept, and fall back to
+  // the read-only across-yards view where the stock is still visible.
+  const fac = knownFacility(facility);
+  if (!fac) {
+    if (normFacility(facility)) {
+      toast(`Warehouse "${normFacility(facility)}" is not in the warehouse list.`, 'error');
+    }
+    return openItemAllYards(sku);
+  }
+  const item = SY.itemBySku(sku);
+  const b = await SY.projectedFor(fac, sku);
+  const closed = isClosedFacility(fac);
+  // Nowhere to move stock TO unless a second open yard exists.
+  const canMove = activeFacilities().filter(f => f.facility !== fac).length > 0;
+  openSheet({
+    title: sku,
+    body: `
+      <p style="color:var(--muted);font-size:var(--fs-sm)">
+        ${esc(item?.description || '')}${item?.uom ? ' · ' + esc(item.uom) : ''}
+      </p>
+      <div class="fac-note">🏗 <span><b>${esc(fac)}</b>${closed ? ' · this warehouse is closed' : ''}${
+        SY.state.facilities.length > 1
+          ? ' — these figures and every button below are for this warehouse only.'
+          : ''}</span></div>
       <div class="equation">
         <span class="term"><span class="v">${n(b.total)}</span>
           <span class="eyebrow" style="display:block">total</span></span>
@@ -987,46 +1564,97 @@ async function openItemDetail(sku) {
         <button class="btn btn-ghost" id="dtRcv">⬇ Receive</button>
         <button class="btn btn-ghost" id="dtIss" ${b.good <= 0 ? 'disabled' : ''}>⬆ Issue</button>
       </div>
-      <button class="btn btn-danger" id="dtDmg" style="margin-top:var(--s-2)"
-        ${b.good <= 0 ? 'disabled' : ''}>⚠ Record damage on this stock</button>
-      ${b.good <= 0 ? '<div class="field-help">No good stock to mark as damaged.</div>' : ''}
-      <div class="eyebrow" style="margin-top:var(--s-6)">Recent movements</div>
+      <div class="btn-row" style="margin-top:var(--s-2)">
+        <button class="btn btn-danger" id="dtDmg"
+          ${b.good <= 0 ? 'disabled' : ''}>⚠ Record damage</button>
+        <button class="btn btn-ghost" id="dtMove"
+          ${b.good <= 0 || !canMove ? 'disabled' : ''}>⇄ Move stock</button>
+      </div>
+      ${b.good <= 0
+        ? `<div class="field-help">No good stock at ${esc(fac)} to damage or move.</div>`
+        : (!canMove
+          ? '<div class="field-help">Add a second warehouse to move stock between them.</div>'
+          : '')}
+      ${b.total === 0 && b.damaged === 0 && !b.pending ? `<button class="btn btn-ghost" id="dtOpen"
+        style="margin-top:var(--s-2)">📋 Set opening stock at ${esc(fac)}</button>` : ''}
+      ${SY.state.facilities.length > 1 ? `<button class="btn btn-ghost" id="dtAll"
+        style="margin-top:var(--s-2)">See all warehouses</button>` : ''}
+      <div class="eyebrow" style="margin-top:var(--s-6)">Recent movements · ${esc(fac)}</div>
       <div id="dtMoves"><div class="skel"></div></div>`
   });
-  $('dtRcv').onclick = () => { closeSheet(); ui.rcvSku = sku; show('receive'); };
-  $('dtIss').onclick = () => { closeSheet(); ui.issSku = sku; show('issue'); };
-  $('dtDmg').onclick = () => openDamageSheet(sku);
-  loadMoves(sku);
+  // Both carry the yard into the entry screen. This is the 10.A exception to
+  // "no pre-fill": the action was started from a place that already names one
+  // warehouse, so asking again would be asking a question already answered.
+  $('dtRcv').onclick = () => { closeSheet(); ui.rcvSku = sku; show('receive', fac); };
+  $('dtIss').onclick = () => { closeSheet(); ui.issSku = sku; show('issue', fac); };
+  $('dtDmg').onclick = () => openDamageSheet(sku, fac);
+  $('dtMove').onclick = () => openTransferSheet(sku, fac);
+  if ($('dtOpen')) $('dtOpen').onclick = () => openOpeningSheet(sku, fac);
+  if ($('dtAll')) $('dtAll').onclick = () => openItemAllYards(sku);
+  loadMoves(sku, fac);
 }
 
-async function loadMoves(sku) {
+/** Movement classes and labels, shared by the queued and the server lists. */
+const MV_CLASS = { INBOUND:'IN', OPENING:'IN', OUTBOUND:'OUT', TRANSFER:'OUT',
+  DAMAGE:'DMG', REPAIR:'IN', VOID:'DMG' };
+const MV_LABEL = { INBOUND:'RECEIVED', OPENING:'OPENING', OUTBOUND:'ISSUED',
+  TRANSFER:'MOVED', DAMAGE:'DAMAGED', REPAIR:'REPAIRED', VOID:'CANCELLED' };
+
+/**
+ * @param {string} sku
+ * @param {string} facility  '' for every warehouse
+ *
+ * A TRANSFER is history at BOTH ends — it left one yard and arrived at another
+ * — so it is kept when either end matches. The server's getLedger applies the
+ * same rule to the same param, so the queued list and the uploaded list agree
+ * about what belongs on this screen.
+ */
+async function loadMoves(sku, facility) {
   const el = $('dtMoves');
   if (!el) return;
-  // S03: matched on the SKU alone, so the pending list shows entries queued
-  // at OTHER yards too. Harmless while there is one yard; add
-  // `&& i.facility === uiFacility` when the picker lands.
-  const queued = (await OB.pendingItems()).filter(i => i.sku === sku);
-  const localHtml = queued.map(i => `
-    <div class="mv ${i.type === 'INBOUND' ? 'IN' : i.type === 'OUTBOUND' ? 'OUT' : 'DMG'}">
-      <span class="t"><b>${i.type === 'INBOUND' ? 'RECEIVED' : i.type === 'OUTBOUND' ? 'ISSUED' : 'DAMAGED'}</b>
-        <span class="when">${esc(prefs.getUser() || '')} · not uploaded yet</span></span>
+  const want = normSku(sku);
+  const fac = normFacility(facility);
+  const queued = (await OB.pendingItems()).filter(i =>
+    normSku(i.sku) === want &&
+    (!fac || normFacility(i.facility) === fac || normFacility(i.toFacility) === fac));
+  const localHtml = queued.map(i => {
+    const t = String(i.type || '').toUpperCase();
+    // At the destination of a pending transfer the movement is an ARRIVAL, and
+    // labelling it "MOVED OUT" there would read as stock leaving.
+    const arriving = t === 'TRANSFER' && fac && normFacility(i.toFacility) === fac;
+    const label = arriving ? 'MOVED IN' : (MV_LABEL[t] || t);
+    const route = t === 'TRANSFER'
+      ? `${esc(i.facility)} → ${esc(i.toFacility)}`
+      : esc(i.facility || '');
+    return `<div class="mv ${arriving ? 'IN' : (MV_CLASS[t] || 'DMG')}">
+      <span class="t"><b>${esc(label)}</b>
+        <span class="when">${route}${route ? ' · ' : ''}${esc(prefs.getUser() || '')} · not uploaded yet</span></span>
       <span class="q">${n(i.payload.qty)}</span>
       <span class="pending-tag">⟳</span>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   let serverHtml = '';
   try {
     const { apiGet } = await import('./lib/api.js');
-    const res = await apiGet('getLedger', { sku, limit: '10' });
+    const params = { sku, limit: '10' };
+    if (fac) params.facility = fac;
+    const res = await apiGet('getLedger', params);
     const rows = (res.data && res.data.rows) || [];
     serverHtml = rows.length ? rows.map(r => {
-      const cls = r.type === 'INBOUND' ? 'IN' : r.type === 'OUTBOUND' ? 'OUT' : 'DMG';
-      const label = { INBOUND:'RECEIVED', OUTBOUND:'ISSUED', DAMAGE:'DAMAGED',
-        OPENING:'OPENING', VOID:'CANCELLED', REPAIR:'REPAIRED' }[r.type] || r.type;
-      const extra = r.damagedQty > 0 && r.type === 'INBOUND' ? ` (${n(r.damagedQty)} dmg)` : '';
+      const type = String(r.type || '').toUpperCase();
+      const arriving = type === 'TRANSFER' && fac && normFacility(r.toFacility) === fac;
+      const cls = arriving ? 'IN' : (MV_CLASS[type] || 'DMG');
+      const label = arriving ? 'MOVED IN' : (MV_LABEL[type] || type);
+      const extra = r.damagedQty > 0 && type === 'INBOUND' ? ` (${n(r.damagedQty)} dmg)` : '';
+      // Always say WHERE when the sheet is not already scoped to one yard.
+      const where = type === 'TRANSFER'
+        ? `${esc(r.facility)} → ${esc(r.toFacility)}`
+        : esc(r.facility || '');
       return `<div class="mv ${cls}">
-        <span class="t"><b>${label}</b>${extra}
-          <span class="when">${esc(r.recordedBy)} · ${when(r.clientTs || r.serverTs)}</span>
+        <span class="t"><b>${esc(label)}</b>${extra}
+          <span class="when">${where && (!fac || type === 'TRANSFER') ? where + ' · ' : ''}${esc(r.recordedBy)} · ${when(r.clientTs || r.serverTs)}</span>
+          ${r.vehicleNo ? `<span class="when">🚚 ${esc(r.vehicleNo)}</span>` : ''}
           ${r.remarks ? `<span class="when">${esc(r.remarks)}</span>` : ''}</span>
         <span class="q">${n(r.qty)}</span></div>`;
     }).join('') : '<p style="color:var(--muted);font-size:var(--fs-sm)">No movements recorded yet.</p>';
@@ -1049,18 +1677,19 @@ async function openPicker(target) {
       </div>`,
     body: '<div id="pkList"></div>'
   });
+  // The yard whose stock this picker should quote — the ENTRY SCREEN's, never
+  // the stock screen's. `projected()` is one row per (facility, sku), so a bare
+  // `.find(b => b.sku === sku)` returns whichever yard sorts FIRST: with YARD A
+  // holding 350 and YARD B holding 0, the picker opened for YARD B showed 350.
+  // A plausible number, never an error.
+  const facOf = t => (t === 'rcv' ? ui.rcvFacility : ui.issFacility);
+
   const paint = async () => {
     const q = ($('pkSearch')?.value || '').trim();
     const bals = await SY.projected();
-    // Match on the YARD as well as the SKU. `projected()` has been one row per
-    // (facility, sku) since S02, sorted facility-then-sku, so a bare
-    // `.find(b => b.sku === sku)` returns whichever yard happens to sort
-    // FIRST: with YARD A holding 350 and YARD B holding 0, the picker opened
-    // at YARD B showed 350. A plausible number, never an error. Until S03
-    // wires the picker `uiFacility` is '' and this correctly shows nothing
-    // rather than another yard's stock.
+    const fac = normFacility(facOf(target));
     const balOf = sku =>
-      bals.find(b => b.facility === uiFacility && b.sku === sku)
+      bals.find(b => b.facility === fac && b.sku === sku)
       || { total:0, damaged:0, good:0 };
     const all = SY.state.items.filter(i => i.active !== false && matches(i, q));
 
@@ -1071,12 +1700,18 @@ async function openPicker(target) {
           <span class="row-sku">${esc(i.sku)}</span>
           <span class="row-desc">${esc(i.description)}</span>
         </span>
-        <span class="row-num"><span class="v" style="font-size:var(--fs-md)">${n(b.total)}</span>
+        <span class="row-num">
+          ${fac
+            ? `<span class="v" style="font-size:var(--fs-md)">${n(b.total)}</span>`
+            : '<span class="v" style="font-size:var(--fs-md);color:var(--muted)">—</span>'}
           <span class="eyebrow" style="display:block">${esc(i.uom || '')}</span></span>
       </button>`;
     };
 
-    let html = '';
+    let html = fac
+      ? `<div class="fac-note">🏗 <span>Stock shown is at <b>${esc(fac)}</b>.</span></div>`
+      : `<div class="fac-note">🏗 <span>Choose a warehouse on the previous screen to see
+           how much of each item is there.</span></div>`;
     if (!q && recent.length) {
       const rec = recent.map(s => all.find(i => i.sku === s)).filter(Boolean);
       if (rec.length) {
@@ -1120,6 +1755,24 @@ for (const el of document.querySelectorAll('[data-picker]')) {
   el.onclick = () => openPicker(el.dataset.picker);
 }
 
+for (const el of document.querySelectorAll('[data-fac-picker]')) {
+  const target = el.dataset.facPicker;
+  el.onclick = () => openFacilityPicker({
+    title: target === 'rcv' ? 'Receive into which warehouse?' : 'Issue from which warehouse?',
+    current: target === 'rcv' ? ui.rcvFacility : ui.issFacility,
+    onPick: fac => {
+      // A SCREEN opened this picker, so the sheet has to be closed here —
+      // openFacilityPicker deliberately does not do it.
+      closeSheet();
+      if (target === 'rcv') ui.rcvFacility = fac; else ui.issFacility = fac;
+      // Changing the yard changes the available stock, so the quantity already
+      // typed may no longer be valid. paintIssue re-runs the check against the
+      // new yard and disables the button; it must never be skipped here.
+      render();
+    }
+  });
+}
+
 /* ================= steppers ================= */
 function readNum(id) {
   const v = ($(id).value || '').replace(/[^\d]/g, '');
@@ -1149,7 +1802,35 @@ function onFormInput() {
 }
 
 /* ================= S2 receive ================= */
+/**
+ * Paint the warehouse selector on an entry screen.
+ * @return {string} the chosen facility, normalised ('' when none)
+ */
+function paintFacilitySelect(selId, errId, facility) {
+  const fac = normFacility(facility);
+  const sel = $(selId);
+  sel.classList.remove('is-invalid');
+  const closed = fac && isClosedFacility(fac);
+  sel.innerHTML = fac ? `
+      <span class="row-main">
+        <span class="row-sku">${esc(fac)}</span>
+        ${closed
+          ? '<span class="row-desc" style="color:var(--rsa-red)">This warehouse is closed — the entry will still be recorded and flagged</span>'
+          : `<span class="row-desc">${esc(SY.facilityByName(fac)?.description || '')}</span>`}
+      </span><span class="chg">Change</span>`
+    : '<span class="row-main"><span class="placeholder">Tap to choose warehouse</span></span>';
+  $(errId).textContent = '';
+  return fac;
+}
+
 async function renderReceive() {
+  if (!SY.state.facilities.length) {
+    $('rcvSubmit').disabled = true;
+    $('rcvCtx').hidden = false;
+    $('rcvCtx').innerHTML = 'Add a warehouse before recording stock — every entry is '
+      + 'recorded against one.';
+    return;
+  }
   if (!SY.state.items.length) {
     $('rcvSubmit').disabled = true;
     $('rcvCtx').hidden = false;
@@ -1161,6 +1842,12 @@ async function renderReceive() {
 
 async function paintReceive() {
   const sku = ui.rcvSku;
+  // Self-heal rather than only refusing at submit: a warehouse that has left
+  // the list (removed by hand in the Sheet, or a list refreshed underneath an
+  // open form) drops back to "Tap to choose warehouse" here, so the screen
+  // never shows a yard the entry would then be refused for.
+  ui.rcvFacility = knownFacility(ui.rcvFacility);
+  const fac = paintFacilitySelect('rcvFac', 'rcvFacErr', ui.rcvFacility);
   const item = sku ? SY.itemBySku(sku) : null;
   const sel = $('rcvItem');
   sel.classList.remove('is-invalid');
@@ -1173,10 +1860,10 @@ async function paintReceive() {
 
   $('rcvUom').textContent = item ? `(${item.uom})` : '';
   const ctx = $('rcvCtx');
-  if (item) {
-    const b = await SY.projectedFor(uiFacility, sku);
+  if (item && fac) {
+    const b = await SY.projectedFor(fac, sku);
     ctx.hidden = false;
-    ctx.innerHTML = `In yard now — <b>${n(b.total)}</b> total · ✓ ${n(b.good)} good · ⚠ ${n(b.damaged)} damaged`;
+    ctx.innerHTML = `At <b>${esc(fac)}</b> now — <b>${n(b.total)}</b> total · ✓ ${n(b.good)} good · ⚠ ${n(b.damaged)} damaged`;
   } else { ctx.hidden = true; }
 
   const qty = readNum('rcvQty');
@@ -1186,7 +1873,10 @@ async function paintReceive() {
   $('rcvQty').classList.remove('is-invalid');
   $('rcvDmg').classList.remove('is-invalid');
 
-  let valid = !!item;
+  // 5.A: no warehouse, no entry. The server refuses a facility-less row
+  // outright (UNKNOWN_FACILITY, non-retryable), so letting it be submitted
+  // would put a real movement straight into the failures list.
+  let valid = !!item && !!fac;
   if (qty === null) { valid = false; }
   else if (qty < 1) { qErr.textContent = 'Quantity must be at least 1.'; $('rcvQty').classList.add('is-invalid'); valid = false; }
   if (qty !== null && dmg > qty) {
@@ -1196,40 +1886,55 @@ async function paintReceive() {
   }
 
   const pv = $('rcvPreview');
-  if (item && qty !== null && qty >= 1 && dmg <= qty) {
-    const b = await SY.projectedFor(uiFacility, sku);
+  if (item && fac && qty !== null && qty >= 1 && dmg <= qty) {
+    const b = await SY.projectedFor(fac, sku);
     pv.hidden = false;
     pv.innerHTML = `
       <div class="line"><span>Receiving <b>${n(qty)}</b></span>
         <span>→ <b style="color:var(--good-ink)">${n(qty - dmg)} good</b> + <b style="color:var(--rsa-red)">${n(dmg)} damaged</b></span></div>
       ${stockBar(qty, dmg)}
       <div class="line" style="margin-top:var(--s-3);color:var(--muted)">
-        <span>Yard after this</span>
+        <span>${esc(fac)} after this</span>
         <span>${n(b.total + qty)} total · ${n(b.good + qty - dmg)} good · ${n(b.damaged + dmg)} damaged</span></div>`;
   } else { pv.hidden = true; }
 
   $('rcvSubmit').disabled = !valid;
-  $('rcvSubmit').textContent = valid ? `Receive ${n(qty)} ${item.uom}` : 'Receive';
+  $('rcvSubmit').textContent = valid ? `Receive ${n(qty)} ${item.uom} into ${fac}` : 'Receive';
 }
 
 $('rcvSubmit').onclick = async () => {
   const btn = $('rcvSubmit');
   const sku = ui.rcvSku;
+  // knownFacility, not normFacility: the button is the last gate before a real
+  // movement is written, and an entry naming a warehouse the server does not
+  // have is refused NON-retryably — it would land in the failures list instead
+  // of in the yard. Re-checked here rather than trusted from paintReceive
+  // because the warehouse list refreshes in the background.
+  const fac = knownFacility(ui.rcvFacility);
   const qty = readNum('rcvQty');
   const dmg = readNum('rcvDmg') ?? 0;
-  if (!sku || qty === null || qty < 1 || dmg > qty) return;
+  if (!sku || !fac || qty === null || qty < 1 || dmg > qty) {
+    // Say so. Re-painting alone resets the warehouse field to its placeholder
+    // and disables the button, which is correct but reads as the tap simply
+    // not registering — and a yard worker taps again, and again.
+    if (sku && !fac && ui.rcvFacility) {
+      toast(`Warehouse "${ui.rcvFacility}" is no longer in the list — choose one.`, 'error');
+    }
+    await paintReceive();
+    return;
+  }
 
   btn.disabled = true;
   const { settled } = await OB.enqueue({
-    type: 'INBOUND', sku,
+    type: 'INBOUND', sku, facility: fac,
     payload: { qty, damagedQty: dmg, refNo: $('rcvRef').value.trim(), remarks: $('rcvNote').value.trim() },
     recordedBy: prefs.getUser()
   });
   buzz();
   const item = SY.itemBySku(sku);
   toast(dmg > 0
-    ? `Received ${n(qty)} ${item.uom} of ${sku}. ${n(dmg)} damaged.`
-    : `Received ${n(qty)} ${item.uom} of ${sku}.`);
+    ? `Received ${n(qty)} ${item.uom} of ${sku} into ${fac}. ${n(dmg)} damaged.`
+    : `Received ${n(qty)} ${item.uom} of ${sku} into ${fac}.`);
   // Keep the item selected — several trucks of the same SKU arrive in a row.
   $('rcvQty').value = ''; $('rcvDmg').value = '0';
   $('rcvRef').value = ''; $('rcvNote').value = '';
@@ -1241,7 +1946,7 @@ $('rcvSubmit').onclick = async () => {
 
 /* ================= S3 issue ================= */
 async function renderIssue() {
-  if (!SY.state.items.length) {
+  if (!SY.state.items.length || !SY.state.facilities.length) {
     $('issSubmit').disabled = true;
     return;
   }
@@ -1250,6 +1955,9 @@ async function renderIssue() {
 
 async function paintIssue() {
   const sku = ui.issSku;
+  // Same self-heal as paintReceive.
+  ui.issFacility = knownFacility(ui.issFacility);
+  const fac = paintFacilitySelect('issFac', 'issFacErr', ui.issFacility);
   const item = sku ? SY.itemBySku(sku) : null;
   const sel = $('issItem');
   sel.classList.remove('is-invalid');
@@ -1262,48 +1970,55 @@ async function paintIssue() {
   $('issUom').textContent = item ? `(${item.uom})` : '';
 
   const av = $('issAvail');
+  // `good` is THIS warehouse's good stock and nothing else. It gates the
+  // button, the "All" chip, the quantity check and the preview — F10 in one
+  // variable. It stays 0 until a warehouse is chosen, so nothing is issuable
+  // from "nowhere", and it is never an across-yard total.
   let good = 0;
-  if (item) {
-    const b = await SY.projectedFor(uiFacility, sku);
+  if (item && fac) {
+    const b = await SY.projectedFor(fac, sku);
     good = b.good;
     av.hidden = false;
     av.className = 'avail' + (good <= 0 ? ' zero' : '');
     av.innerHTML = `
-      <div class="eyebrow">Available to issue</div>
+      <div class="eyebrow">Available to issue at ${esc(fac)}</div>
       <div class="v">${n(good)}</div>
       <div style="font-size:var(--fs-sm);color:var(--muted)">${esc(item.uom)}</div>
       ${stockBar(b.total, b.damaged)}
       <div class="sub">${good <= 0
-        ? 'Nothing available to issue.'
+        ? `Nothing available to issue at ${esc(fac)}.`
         : `${n(b.total)} total · ${n(b.damaged)} damaged can't be issued`}</div>`;
     $('issAll').textContent = `All ${n(good)}`;
-  } else { av.hidden = true; }
+  } else {
+    av.hidden = true;
+    $('issAll').textContent = 'All';
+  }
 
   const qty = readNum('issQty');
   const err = $('issQtyErr');
   err.textContent = '';
   $('issQty').classList.remove('is-invalid');
 
-  let valid = !!item && good > 0;
+  let valid = !!item && !!fac && good > 0;
   if (qty === null) valid = false;
   else if (qty < 1) { err.textContent = 'Quantity must be at least 1.'; valid = false; }
-  else if (item && qty > good) {
-    err.textContent = `Only ${n(good)} ${item.uom} available. You can't issue more than that.`;
+  else if (item && fac && qty > good) {
+    err.textContent = `Only ${n(good)} ${item.uom} available at ${fac}. You can't issue more than that.`;
     $('issQty').classList.add('is-invalid');
     valid = false;
   }
 
   const pv = $('issPreview');
   if (valid) {
-    const b = await SY.projectedFor(uiFacility, sku);
+    const b = await SY.projectedFor(fac, sku);
     pv.hidden = false;
-    pv.innerHTML = `<div class="line"><span>Left after this</span>
+    pv.innerHTML = `<div class="line"><span>Left at ${esc(fac)} after this</span>
       <span><b>${n(b.good - qty)} good</b> · ${n(b.total - qty)} total</span></div>
-      ${qty === good ? '<span class="chip chip-neutral" style="margin-top:var(--s-2)">This will empty the good stock</span>' : ''}`;
+      ${qty === good ? `<span class="chip chip-neutral" style="margin-top:var(--s-2)">This will empty the good stock at ${esc(fac)}</span>` : ''}`;
   } else { pv.hidden = true; }
 
   $('issSubmit').disabled = !valid;
-  $('issSubmit').textContent = valid ? `Issue ${n(qty)} ${item.uom}` : 'Issue';
+  $('issSubmit').textContent = valid ? `Issue ${n(qty)} ${item.uom} from ${fac}` : 'Issue';
 };
 
 /**
@@ -1332,21 +2047,34 @@ $('issVehicle').oninput = e => {
 };
 
 $('issAll').onclick = async () => {
-  if (!ui.issSku) return;
-  const b = await SY.projectedFor(uiFacility, ui.issSku);
+  // "All" means all of what is HERE. Without a warehouse there is no here, so
+  // it fills nothing rather than filling in an across-yard total.
+  if (!ui.issSku || !ui.issFacility) return;
+  const b = await SY.projectedFor(ui.issFacility, ui.issSku);
   $('issQty').value = String(Math.max(0, b.good));
   paintIssue();
 };
 
 $('issSubmit').onclick = async () => {
   const sku = ui.issSku;
+  const fac = knownFacility(ui.issFacility);
   const qty = readNum('issQty');
-  if (!sku || qty === null || qty < 1) return;
+  if (!sku || !fac || qty === null || qty < 1) {
+    if (sku && !fac && ui.issFacility) {
+      toast(`Warehouse "${ui.issFacility}" is no longer in the list — choose one.`, 'error');
+    }
+    await paintIssue();
+    return;
+  }
+  // Last gate before a real movement: re-check against THIS yard, not the
+  // figure the screen was painted with.
+  const before = await SY.projectedFor(fac, sku);
+  if (qty > before.good) { await paintIssue(); return; }
   $('issSubmit').disabled = true;
 
   const vehicleNo = $('issVehicle').value.trim().toUpperCase();
   const { settled } = await OB.enqueue({
-    type: 'OUTBOUND', sku,
+    type: 'OUTBOUND', sku, facility: fac,
     payload: {
       qty, condition: 'GOOD', refNo: $('issRef').value.trim(),
       vehicleNo, remarks: $('issNote').value.trim()
@@ -1356,8 +2084,8 @@ $('issSubmit').onclick = async () => {
   if (vehicleNo) prefs.pushRecentVehicle(vehicleNo);
   buzz();
   const item = SY.itemBySku(sku);
-  const after = await SY.projectedFor(uiFacility, sku);
-  toast(`Issued ${n(qty)} ${item.uom} of ${sku}. ${n(after.good)} good left.`);
+  const after = await SY.projectedFor(fac, sku);
+  toast(`Issued ${n(qty)} ${item.uom} of ${sku} from ${fac}. ${n(after.good)} good left there.`);
   $('issQty').value = ''; $('issRef').value = '';
   $('issVehicle').value = ''; $('issNote').value = '';
   renderVehicleChips();
@@ -1368,17 +2096,47 @@ $('issSubmit').onclick = async () => {
 };
 
 /* ================= S5 record damage ================= */
-async function openDamageSheet(sku) {
+/**
+ * @param {string} sku
+ * @param {string} facility  REQUIRED — damage is always at one warehouse
+ *
+ * There is no all-warehouses damage sheet. The only way in is the per-yard item
+ * detail, so `maxGood` below is always one yard's good stock. Changing the yard
+ * re-opens the sheet rather than mutating it, because `maxGood` is captured at
+ * open and a half-updated sheet would police the old yard's limit.
+ */
+async function openDamageSheet(sku, facility) {
+  const fac = normFacility(facility);
+  if (!fac) return;
   const item = SY.itemBySku(sku);
-  const b = await SY.projectedFor(uiFacility, sku);
+  const b = await SY.projectedFor(fac, sku);
+  // Only yards that actually hold good stock of this item can be damaged at, so
+  // they are the only ones the change-warehouse picker offers.
+  const damageable = (await SY.projected())
+    .filter(r => r.sku === normSku(sku) && r.good > 0 && r.facility)
+    .map(r => r.facility);
+  // Refuse up front rather than opening a form whose limit is 0 and whose
+  // submit can never enable — the same guard openTransferSheet has. Reachable
+  // because stock can move between this sheet being offered and being opened.
+  if (b.good <= 0) { toast(`No good stock at ${fac} to damage.`, 'error'); return; }
+  const otherYards = damageable.some(f => f !== fac);
   openSheet({
     title: 'Record damage',
     body: `
       <p style="font-size:var(--fs-sm);color:var(--muted);margin-bottom:var(--s-3)">
         ${esc(sku)} · ${esc(item?.description || '')}</p>
+      <div class="field">
+        <span class="field-label eyebrow">Warehouse <span class="req">*</span></span>
+        <button class="item-select" id="dmgFac"${otherYards ? '' : ' disabled'}>
+          <span class="row-main">
+            <span class="row-sku">${esc(fac)}</span>
+            <span class="row-desc">✓ ${n(b.good)} good here</span>
+          </span>${otherYards ? '<span class="chg">Change</span>' : ''}
+        </button>
+      </div>
       <div class="note-info">
         This does <b>NOT</b> reduce your total stock.<br>
-        It moves stock from <b>GOOD to DAMAGED</b>.
+        It moves stock from <b>GOOD to DAMAGED</b> at ${esc(fac)}.
       </div>
       <div class="field">
         <label class="field-label eyebrow" for="dmgQty">
@@ -1389,7 +2147,7 @@ async function openDamageSheet(sku) {
             placeholder="0" aria-label="Damaged quantity">
           <button type="button" id="dmgPlus" aria-label="More">+</button>
         </div>
-        <div class="chips">
+        <div class="chips" id="dmgChips">
           <button class="chip-add" data-dmg="1">+1</button>
           <button class="chip-add" data-dmg="5">+5</button>
           <button class="chip-add" data-dmg="10">+10</button>
@@ -1415,6 +2173,18 @@ async function openDamageSheet(sku) {
 
   let reason = null;
   const maxGood = b.good;
+
+  $('dmgFac').onclick = () => {
+    if (!otherYards) return;
+    openFacilityPicker({
+      title: 'Damage at which warehouse?',
+      current: fac,
+      allow: damageable,
+      // Re-open, never patch. maxGood, the preview and the confirmation text
+      // are all computed from the yard this sheet was opened for.
+      onPick: next => openDamageSheet(sku, next)
+    });
+  };
 
   const repaint = () => {
     const qty = readNum('dmgQty');
@@ -1458,7 +2228,7 @@ async function openDamageSheet(sku) {
   };
   $('dmgMinus').onclick = () => bump(-1);
   $('dmgPlus').onclick = () => bump(1);
-  for (const c of document.querySelectorAll('[data-dmg]')) {
+  for (const c of $('dmgChips').querySelectorAll('[data-dmg]')) {
     c.onclick = () => bump(parseInt(c.dataset.dmg, 10));
   }
   for (const t of $('dmgReasons').querySelectorAll('[data-reason]')) {
@@ -1480,19 +2250,399 @@ async function openDamageSheet(sku) {
     const detail = reason === 'Other' ? $('dmgOther').value.trim() : '';
     confirmSheet({
       title: 'Mark as damaged?',
-      message: `<b>${n(qty)} ${esc(item?.uom || '')}</b> of ${esc(sku)} · ${esc(reason)}.<br><br>
-        Good stock goes ${n(b.good)} → <b>${n(b.good - qty)}</b>.
+      message: `<b>${n(qty)} ${esc(item?.uom || '')}</b> of ${esc(sku)} at <b>${esc(fac)}</b> · ${esc(reason)}.<br><br>
+        Good stock at ${esc(fac)} goes ${n(b.good)} → <b>${n(b.good - qty)}</b>.
         Total stays <b>${n(b.total)}</b>.`,
       confirmLabel: 'Yes, record damage',
       danger: true,
       onConfirm: async () => {
+        // `maxGood` was captured when the sheet opened, and confirmSheet has
+        // just added a second dwell on top of that. A background sync or
+        // another phone's issue from this yard can land in between, so the
+        // limit is re-read here against the CURRENT projection. Without it the
+        // entry is enqueued and bounces back as DAMAGE_EXCEEDS_GOOD, which
+        // reaches the user as a failure rather than as a full form.
+        const nowFac = knownFacility(fac);
+        const now = nowFac ? await SY.projectedFor(nowFac, sku) : { good: 0 };
+        if (!nowFac || qty > now.good) {
+          // Close it: confirmSheet has replaced the form, so leaving the sheet
+          // up strands the user on a button that can only ever re-toast.
+          closeSheet();
+          toast(nowFac
+            ? `Only ${n(now.good)} good left at ${nowFac} now — nothing recorded.`
+            : `Warehouse "${fac}" is not in the warehouse list.`, 'error');
+          await render();
+          return;
+        }
         const { settled } = await OB.enqueue({
-          type: 'DAMAGE', sku,
+          type: 'DAMAGE', sku, facility: nowFac,
           payload: { qty, remarks: detail ? `${reason}: ${detail}` : reason },
           recordedBy: prefs.getUser()
         });
         buzz();
-        toast(`${n(qty)} ${item?.uom || ''} marked damaged. Total stock unchanged.`);
+        toast(`${n(qty)} ${item?.uom || ''} marked damaged at ${fac}. Total stock unchanged.`);
+        await render();
+        settleInBackground(settled);
+        warnOfflineOnce();
+      }
+    });
+  };
+  repaint();
+}
+
+/* ================= S6 move stock between warehouses ================= */
+
+/**
+ * @param {string} sku
+ * @param {string} fromFacility  REQUIRED — the yard the stock is leaving
+ *
+ * ONE ledger row, typed TRANSFER, that moves the balance at two places at
+ * once (PLAN A4). The client sends one outbox entry; `deltasFor` turns it into
+ * two keyed deltas on both sides of the wire, so nothing here has to know that
+ * a transfer is special.
+ *
+ * The source is fixed by where the sheet was opened from and is never a picker:
+ * `maxGood` is the source's good stock, and letting the source change under a
+ * typed quantity is the same class of bug as gating on an aggregate.
+ *
+ * Damaged stock does not move (PLAN A4). That is a scope decision, not an
+ * oversight, and the server enforces it too — it zeroes dDamaged on both legs
+ * whatever `condition` says.
+ */
+async function openTransferSheet(sku, fromFacility) {
+  const from = normFacility(fromFacility);
+  if (!from) return;
+  const item = SY.itemBySku(sku);
+  const b = await SY.projectedFor(from, sku);
+  const maxGood = b.good;
+  if (maxGood <= 0) { toast(`No good stock at ${from} to move.`, 'error'); return; }
+  const canPick = activeFacilities().filter(f => f.facility !== from).length > 0;
+  if (!canPick) { toast('Add a second warehouse to move stock between them.', 'error'); return; }
+
+  let toFac = '';
+
+  openSheet({
+    title: 'Move stock',
+    body: `
+      <p style="font-size:var(--fs-sm);color:var(--muted);margin-bottom:var(--s-3)">
+        ${esc(sku)} · ${esc(item?.description || '')}</p>
+      <div class="note-info">
+        This does <b>NOT</b> change your total stock.<br>
+        It moves <b>good</b> stock from one warehouse to another.
+        Damaged stock cannot be moved.
+      </div>
+      <div class="field">
+        <span class="field-label eyebrow">From</span>
+        <div class="item-select" style="background:var(--disabled-bg)">
+          <span class="row-main">
+            <span class="row-sku">${esc(from)}</span>
+            <span class="row-desc">✓ ${n(maxGood)} good available to move</span>
+          </span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="field-label eyebrow">To <span class="req">*</span></span>
+        <!-- Chips, not the warehouse picker sheet. There is only ONE sheet, so
+             opening the picker from in here would replace this form and lose
+             the quantity already typed. Under ten warehouses (14.A) a wrapped
+             chip row is also one tap instead of three. -->
+        <div class="chips" id="trToChips"></div>
+        <div class="field-error" id="trToErr"></div>
+      </div>
+      <div class="field">
+        <label class="field-label eyebrow" for="trQty">
+          How many to move? <span class="req">*</span> (${esc(item?.uom || '')})</label>
+        <div class="stepper">
+          <button type="button" id="trMinus" aria-label="Less">−</button>
+          <input id="trQty" type="text" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done"
+            placeholder="0" aria-label="Quantity to move">
+          <button type="button" id="trPlus" aria-label="More">+</button>
+        </div>
+        <div class="chips" id="trQtyChips">
+          <button class="chip-add" data-tr="1">+1</button>
+          <button class="chip-add" data-tr="5">+5</button>
+          <button class="chip-add" data-tr="10">+10</button>
+          <button class="chip-add" id="trAll">All ${n(maxGood)}</button>
+        </div>
+        <div class="field-help">Max ${n(maxGood)} good at ${esc(from)}</div>
+        <div class="field-error" id="trErr"></div>
+      </div>
+      <div class="preview" id="trPreview" hidden></div>
+      <div class="field">
+        <label class="field-label eyebrow" for="trVeh">Vehicle number (optional)</label>
+        <input class="field-input" id="trVeh" type="text" autocomplete="off" maxlength="20"
+          autocapitalize="characters" spellcheck="false" placeholder="Truck / trailer">
+      </div>
+      <div class="field">
+        <label class="field-label eyebrow" for="trNote">Note (optional)</label>
+        <textarea class="field-input" id="trNote" rows="2" maxlength="120"
+          autocapitalize="sentences"></textarea>
+      </div>`,
+    foot: `<button class="btn" id="trSubmit" disabled>⇄ Move stock</button>`
+  });
+
+  const repaint = async () => {
+    const qty = readNum('trQty');
+    const err = $('trErr');
+    err.textContent = '';
+    $('trQty').classList.remove('is-invalid');
+    let valid = !!toFac;
+    if (qty === null) valid = false;
+    else if (qty < 1) { err.textContent = 'Quantity must be at least 1.'; valid = false; }
+    else if (qty > maxGood) {
+      err.textContent = `Only ${n(maxGood)} good ${item?.uom || 'units'} at ${from}. `
+        + `You can't move more than that.`;
+      $('trQty').classList.add('is-invalid');
+      valid = false;
+    }
+
+    const pv = $('trPreview');
+    if (toFac && qty !== null && qty >= 1 && qty <= maxGood) {
+      const dest = await SY.projectedFor(toFac, sku);
+      pv.hidden = false;
+      pv.innerHTML = `
+        <div class="line"><span>${esc(from)} good ${n(b.good)} →
+          <b style="color:var(--rsa-red)">${n(b.good - qty)}</b></span></div>
+        <div class="line"><span>${esc(toFac)} good ${n(dest.good)} →
+          <b style="color:var(--good-ink)">${n(dest.good + qty)}</b></span></div>
+        <div class="line" style="margin-top:var(--s-2);color:var(--muted)">
+          <span>Across both warehouses</span><span><b>unchanged</b></span></div>`;
+    } else { pv.hidden = true; }
+
+    $('trSubmit').disabled = !valid;
+    $('trSubmit').textContent = (qty && qty >= 1 && toFac)
+      ? `⇄ Move ${n(qty)} to ${toFac}` : '⇄ Move stock';
+  };
+
+  // Destinations: every OPEN yard except the source. A closed yard is not
+  // OFFERED — unlike an entry already queued against one, this is a fresh
+  // decision, and 11.A is about accepting movements that have already happened,
+  // not about inviting new ones into a yard that is shut.
+  //
+  // "Not offered" is all this claims. A yard closed on another phone while this
+  // form is open stays selected and the move still posts, because that is what
+  // 11.A requires — the server accepts it and flags it in the row's remarks.
+  const paintToChips = () => {
+    $('trToChips').innerHTML = activeFacilities()
+      .filter(f => f.facility !== from)
+      .map(f => `<button type="button" class="chip-filter" data-to="${esc(f.facility)}"
+        aria-pressed="${String(f.facility === toFac)}">${esc(f.facility)}</button>`).join('');
+    for (const c of $('trToChips').querySelectorAll('[data-to]')) {
+      c.onclick = () => { toFac = normFacility(c.dataset.to); paintToChips(); repaint(); };
+    }
+  };
+
+  const bump = by => {
+    const cur = readNum('trQty') ?? 0;
+    $('trQty').value = String(Math.max(0, Math.min(maxGood, cur + by)));
+    repaint();
+  };
+  $('trMinus').onclick = () => bump(-1);
+  $('trPlus').onclick = () => bump(1);
+  $('trAll').onclick = () => { $('trQty').value = String(maxGood); repaint(); };
+  // Scoped to the container, not `document`. It is only safe over the whole
+  // document because there is exactly one sheet — an invariant this change
+  // already leans on hard enough elsewhere.
+  for (const c of $('trQtyChips').querySelectorAll('[data-tr]')) {
+    c.onclick = () => bump(parseInt(c.dataset.tr, 10));
+  }
+  $('trQty').addEventListener('input', e => {
+    const clean = e.target.value.replace(/[^\d]/g, '').slice(0, 6);
+    if (clean !== e.target.value) e.target.value = clean;
+    repaint();
+  });
+  $('trVeh').oninput = e => {
+    const pos = e.target.selectionStart;
+    e.target.value = e.target.value.toUpperCase();
+    try { e.target.setSelectionRange(pos, pos); } catch { /* not selectable */ }
+  };
+  paintToChips();
+
+  $('trSubmit').onclick = () => {
+    const qty = readNum('trQty');
+    if (!qty || qty < 1 || qty > maxGood || !toFac || toFac === from) return;
+    // Read the free-text fields NOW. confirmSheet replaces this sheet's body,
+    // so by the time onConfirm runs these inputs no longer exist and the
+    // vehicle number and note would be silently dropped.
+    const vehicleNo = $('trVeh').value.trim().toUpperCase();
+    const remarks = $('trNote').value.trim();
+    confirmSheet({
+      title: 'Move this stock?',
+      message: `<b>${n(qty)} ${esc(item?.uom || '')}</b> of ${esc(sku)}<br>
+        from <b>${esc(from)}</b> to <b>${esc(toFac)}</b>.<br><br>
+        Your total across both warehouses does not change.`,
+      confirmLabel: 'Yes, move it',
+      onConfirm: async () => {
+        // Same re-check as the damage sheet, and for the same reason: maxGood
+        // is from sheet-open time and confirmSheet adds another dwell. Both
+        // ends are re-validated against the warehouse list too — either could
+        // have been removed while this form was open.
+        const src = knownFacility(from);
+        const dst = knownFacility(toFac);
+        const now = src ? await SY.projectedFor(src, sku) : { good: 0 };
+        if (!src || !dst || src === dst || qty > now.good) {
+          closeSheet();
+          toast(src && dst
+            ? `Only ${n(now.good)} good left at ${src} now — nothing moved.`
+            : 'One of those warehouses is no longer in the list — nothing moved.', 'error');
+          await render();
+          return;
+        }
+        const { settled } = await OB.enqueue({
+          type: 'TRANSFER', sku, facility: src, toFacility: dst,
+          payload: { qty, condition: 'GOOD', vehicleNo, remarks },
+          recordedBy: prefs.getUser()
+        });
+        if (vehicleNo) prefs.pushRecentVehicle(vehicleNo);
+        buzz();
+        toast(`Moved ${n(qty)} ${item?.uom || ''} of ${sku} from ${from} to ${toFac}.`);
+        await render();
+        settleInBackground(settled);
+        warnOfflineOnce();
+      }
+    });
+  };
+  await repaint();
+}
+
+/* ================= S7 opening stock, per warehouse ================= */
+
+/**
+ * @param {string} sku
+ * @param {string} facility  REQUIRED
+ *
+ * Opening stock is a physical count, and 12.A makes it a once-per-(warehouse,
+ * SKU) entry rather than once per SKU. The item form only ever offers it for
+ * the FIRST warehouse, at the moment the item is created — so without this
+ * sheet a yard that starts holding an existing item has no way to record what
+ * is standing in it, and the count has to be entered as a Receive, writing an
+ * INBOUND row for a delivery that never happened.
+ *
+ * S04's deliverable is Harish entering opening stock per warehouse. This is the
+ * screen that lets him.
+ *
+ * Offered only where nothing is recorded yet at this yard, and re-checked at
+ * confirm. Both checks are the app's own: the server's `opening_done` flag
+ * catches a SECOND opening (OPENING_EXISTS) but nothing else, because the flag
+ * is set only by an OPENING — a key that merely has a receipt against it is
+ * still "opening not done" there, and an opening on top of it would commit and
+ * double the yard's stock.
+ */
+async function openOpeningSheet(sku, facility) {
+  const fac = knownFacility(facility);
+  if (!fac) return;
+  const item = SY.itemBySku(sku);
+
+  openSheet({
+    title: 'Opening stock',
+    body: `
+      <p style="font-size:var(--fs-sm);color:var(--muted);margin-bottom:var(--s-3)">
+        ${esc(sku)} · ${esc(item?.description || '')}</p>
+      <div class="fac-note">🏗 <span>Counting what is standing at <b>${esc(fac)}</b> right now.</span></div>
+      <div class="note-info">
+        Use this <b>once per warehouse</b>, for the first count. After that use
+        <b>Receive</b>, <b>Issue</b> and <b>Record damage</b> so the history stays true.
+      </div>
+      <!-- These two ADD UP: the entry sent is qty = good + damaged. The label
+           "Damaged (of which)" was used here first and is wrong — "of which"
+           says damaged is a subset of the number above it, so a count of
+           "100 units, 20 of them damaged" gets typed as 100 and 20 and posts an
+           opening TOTAL of 120. On a once-per-warehouse entry in an
+           append-only ledger, that overstatement is permanent short of a void. -->
+      <div class="field">
+        <label class="field-label eyebrow" for="opGood">Good — undamaged (${esc(item?.uom || '')})</label>
+        <div class="stepper">
+          <button type="button" id="opGoodMinus" aria-label="Less">−</button>
+          <input id="opGood" type="text" inputmode="numeric" pattern="[0-9]*" value="0"
+            aria-label="Good quantity">
+          <button type="button" id="opGoodPlus" aria-label="More">+</button>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label eyebrow" for="opDmg">Damaged — as well as the good</label>
+        <div class="stepper">
+          <button type="button" id="opDmgMinus" aria-label="Less">−</button>
+          <input id="opDmg" type="text" inputmode="numeric" pattern="[0-9]*" value="0"
+            aria-label="Damaged quantity">
+          <button type="button" id="opDmgPlus" aria-label="More">+</button>
+        </div>
+        <div class="field-help">The opening total is good + damaged.</div>
+        <div class="field-error" id="opErr"></div>
+      </div>
+      <div class="preview" id="opPreview" hidden></div>`,
+    foot: `<button class="btn" id="opSubmit" disabled>Record opening stock</button>`
+  });
+
+  const read = id => parseInt(($(id).value || '0').replace(/[^\d]/g, ''), 10) || 0;
+  const repaint = () => {
+    const g = read('opGood');
+    const d = read('opDmg');
+    const pv = $('opPreview');
+    if (g + d > 0) {
+      pv.hidden = false;
+      pv.innerHTML = `<div class="line"><span>Opening total <b>${n(g + d)}</b> at <b>${esc(fac)}</b></span>
+        <span>= <b style="color:var(--good-ink)">${n(g)} good</b> + <b style="color:var(--rsa-red)">${n(d)} damaged</b></span></div>
+        ${stockBar(g + d, d)}`;
+    } else { pv.hidden = true; }
+    $('opSubmit').disabled = !(g + d > 0);
+    $('opSubmit').textContent = g + d > 0
+      ? `Record ${n(g + d)} at ${fac}` : 'Record opening stock';
+  };
+
+  const bump = (id, by) => {
+    $(id).value = String(Math.max(0, Math.min(999999, read(id) + by)));
+    repaint();
+  };
+  $('opGoodMinus').onclick = () => bump('opGood', -1);
+  $('opGoodPlus').onclick = () => bump('opGood', 1);
+  $('opDmgMinus').onclick = () => bump('opDmg', -1);
+  $('opDmgPlus').onclick = () => bump('opDmg', 1);
+  for (const id of ['opGood', 'opDmg']) {
+    $(id).addEventListener('input', e => {
+      e.target.value = e.target.value.replace(/[^\d]/g, '').slice(0, 6);
+      repaint();
+    });
+  }
+
+  $('opSubmit').onclick = () => {
+    const g = read('opGood');
+    const d = read('opDmg');
+    if (g + d <= 0) return;
+    confirmSheet({
+      title: 'Record opening stock?',
+      message: `<b>${n(g + d)} ${esc(item?.uom || '')}</b> of ${esc(sku)} at <b>${esc(fac)}</b>
+        — ${n(g)} good, ${n(d)} damaged.<br><br>
+        This is the first count for this warehouse and can only be done once.`,
+      confirmLabel: 'Yes, record it',
+      onConfirm: async () => {
+        const nowFac = knownFacility(fac);
+        // Re-read the yard, exactly as the damage and move sheets do. The
+        // "nothing here yet" precondition was tested when this sheet opened and
+        // confirmSheet has added a dwell since; a receipt from another phone, or
+        // one of this phone's own queued entries flushing, lands inside it.
+        //
+        // The server will NOT catch this. `opening_done` is set only by an
+        // OPENING, so a key that merely has a receipt against it is still
+        // "opening not done" and the OPENING commits ON TOP — doubling the
+        // stock at that yard, permanently, in an append-only ledger.
+        const now = nowFac ? await SY.projectedFor(nowFac, sku) : null;
+        if (!nowFac || now.total !== 0 || now.damaged !== 0 || now.pending) {
+          closeSheet();
+          toast(nowFac
+            ? `${sku} already has stock at ${nowFac} — opening stock not recorded.`
+            : `Warehouse "${fac}" is not in the warehouse list.`, 'error');
+          await render();
+          return;
+        }
+        // qty is the TOTAL and damagedQty the subset of it — the same shape the
+        // item form sends, and what deltasFor expects for OPENING.
+        const { settled } = await OB.enqueue({
+          type: 'OPENING', sku, facility: nowFac,
+          payload: { qty: g + d, damagedQty: d, remarks: 'Opening stock' },
+          recordedBy: prefs.getUser()
+        });
+        buzz();
+        toast(`Opening stock of ${n(g + d)} recorded at ${nowFac}.`);
         await render();
         settleInBackground(settled);
         warnOfflineOnce();
@@ -1545,8 +2695,11 @@ $('fabAddItem').onclick = () => openItemForm();
 
 async function openItemForm(existingSku, prefillSku) {
   const item = existingSku ? SY.itemBySku(existingSku) : null;
-  const bal = existingSku ? await SY.projectedFor(uiFacility, existingSku) : { total: 0, damaged: 0 };
-  const hasMoves = !!(existingSku && (bal.total !== 0 || bal.damaged !== 0));
+  // Opening stock is recorded at ONE warehouse. Not pre-filled (6.B) — a
+  // physical count belongs to the yard it was counted in, and inheriting
+  // whichever yard the stock screen was showing is exactly how it would end up
+  // filed against the wrong one.
+  let ifFacility = '';
 
   openSheet({
     title: item ? 'Edit item' : 'Add item',
@@ -1575,7 +2728,18 @@ async function openItemForm(existingSku, prefillSku) {
       ${item ? '' : `
       <div class="eyebrow" style="margin:var(--s-5) 0 var(--s-2)">Opening stock</div>
       <div class="field">
-        <label class="field-label eyebrow" for="ifGood">Good</label>
+        <span class="field-label eyebrow">Warehouse
+          <span class="req" id="ifFacReq" hidden>*</span></span>
+        <!-- Chips rather than the picker sheet: this form IS a sheet, and there
+             is only one, so opening the picker over it would throw away the SKU
+             and description already typed. -->
+        <div class="chips" id="ifFacChips"></div>
+        <div class="field-help">Only needed if you are entering an opening quantity below.</div>
+        <div class="field-error" id="ifFacErr"></div>
+      </div>
+      <!-- Additive, same as the opening sheet — see the note there. -->
+      <div class="field">
+        <label class="field-label eyebrow" for="ifGood">Good — undamaged</label>
         <div class="stepper">
           <button type="button" id="ifGoodMinus">−</button>
           <input id="ifGood" type="text" inputmode="numeric" pattern="[0-9]*" value="0">
@@ -1583,17 +2747,18 @@ async function openItemForm(existingSku, prefillSku) {
         </div>
       </div>
       <div class="field">
-        <label class="field-label eyebrow" for="ifDmg">Damaged (of which)</label>
+        <label class="field-label eyebrow" for="ifDmg">Damaged — as well as the good</label>
         <div class="stepper">
           <button type="button" id="ifDmgMinus">−</button>
           <input id="ifDmg" type="text" inputmode="numeric" pattern="[0-9]*" value="0">
           <button type="button" id="ifDmgPlus">+</button>
         </div>
+        <div class="field-help">The opening total is good + damaged.</div>
       </div>
       <div class="preview" id="ifPreview" hidden></div>`}
-      ${hasMoves ? `<div class="note-info" style="margin-top:var(--s-4)">
-        Opening stock is locked because this item already has movements.
-        Use <b>Receive</b>, <b>Issue</b> or <b>Record damage</b> instead.</div>` : ''}`,
+      ${item ? `<div class="note-info" style="margin-top:var(--s-4)">
+        To set this item's opening stock at another warehouse, open it from the
+        stock screen, choose the warehouse, and tap <b>Opening stock</b>.</div>` : ''}`,
     foot: `<button class="btn" id="ifSave" disabled>Save item</button>`
   });
 
@@ -1612,7 +2777,21 @@ async function openItemForm(existingSku, prefillSku) {
     $(id).value = String(Math.max(0, Math.min(999999, cur + by)));
     validate();
   };
+  const paintIfFacChips = () => {
+    const box = $('ifFacChips');
+    if (!box) return;
+    const open = activeFacilities();
+    box.innerHTML = open.length
+      ? open.map(f => `<button type="button" class="chip-filter" data-iffac="${esc(f.facility)}"
+          aria-pressed="${String(f.facility === ifFacility)}">${esc(f.facility)}</button>`).join('')
+      : '<span class="field-help">No warehouses yet — add one first.</span>';
+    for (const c of box.querySelectorAll('[data-iffac]')) {
+      c.onclick = () => { ifFacility = normFacility(c.dataset.iffac); paintIfFacChips(); validate(); };
+    }
+  };
+
   if (!item) {
+    paintIfFacChips();
     $('ifGoodMinus').onclick = () => stepOpening('ifGood', -1);
     $('ifGoodPlus').onclick = () => stepOpening('ifGood', 1);
     $('ifDmgMinus').onclick = () => stepOpening('ifDmg', -1);
@@ -1650,9 +2829,17 @@ async function openItemForm(existingSku, prefillSku) {
       const g = parseInt(($('ifGood').value || '0').replace(/[^\d]/g, ''), 10) || 0;
       const d = parseInt(($('ifDmg').value || '0').replace(/[^\d]/g, ''), 10) || 0;
       const pv = $('ifPreview');
+      // The warehouse only becomes required once there is an opening quantity
+      // to put somewhere. Saving a catalogue entry with no stock needs no yard.
+      $('ifFacReq').hidden = !(g + d > 0);
+      const fe = $('ifFacErr');
+      if (g + d > 0 && !ifFacility) {
+        fe.textContent = 'Choose the warehouse this opening stock is in.';
+        ok = false;
+      } else { fe.textContent = ''; }
       if (g + d > 0) {
         pv.hidden = false;
-        pv.innerHTML = `<div class="line"><span>Opening total <b>${n(g + d)}</b></span>
+        pv.innerHTML = `<div class="line"><span>Opening total <b>${n(g + d)}</b>${ifFacility ? ` at <b>${esc(ifFacility)}</b>` : ''}</span>
           <span>= <b style="color:var(--good-ink)">${n(g)} good</b> + <b style="color:var(--rsa-red)">${n(d)} damaged</b></span></div>
           ${stockBar(g + d, d)}`;
       } else { pv.hidden = true; }
@@ -1681,9 +2868,13 @@ async function openItemForm(existingSku, prefillSku) {
       if (!item) {
         const g = parseInt(($('ifGood').value || '0').replace(/[^\d]/g, ''), 10) || 0;
         const d = parseInt(($('ifDmg').value || '0').replace(/[^\d]/g, ''), 10) || 0;
-        if (g + d > 0) {
+        // knownFacility here too — the sixth enqueue path. These chips are
+        // painted once and never repainted, so a facilities refresh landing
+        // while this form is open is exactly the window it closes.
+        const openFac = knownFacility(ifFacility);
+        if (g + d > 0 && openFac) {
           const { settled } = await OB.enqueue({
-            type: 'OPENING', sku,
+            type: 'OPENING', sku, facility: openFac,
             payload: { qty: g + d, damagedQty: d, remarks: 'Opening stock' },
             recordedBy: prefs.getUser()
           });
@@ -1707,6 +2898,31 @@ async function openItemForm(existingSku, prefillSku) {
 }
 
 /* ================= failures sheet ================= */
+
+/**
+ * X13 — the residual risk of transfers, stated rather than silently accepted.
+ *
+ * The fold is commutative; VALIDATION is not. An offline transfer A→B that
+ * arrives after another phone has already issued that stock from B is refused
+ * at B, because the server believes B holds nothing. That used to need someone
+ * to issue before a receipt uploaded; with transfers it is routine, since the
+ * destination legitimately holds physical stock the server has not heard about.
+ *
+ * The server already says this on the TRANSFER rejection itself, so the hint is
+ * not repeated when the message already carries it.
+ */
+const SHORTFALL_CODES = ['INSUFFICIENT_GOOD_STOCK', 'INSUFFICIENT_DAMAGED_STOCK',
+  'DAMAGE_EXCEEDS_GOOD', 'REPAIR_EXCEEDS_DAMAGED', 'WOULD_GO_NEGATIVE'];
+
+function rejectionHint(f) {
+  const code = f.error?.code || '';
+  const msg = String(f.error?.message || '');
+  if (!SHORTFALL_CODES.includes(code)) return '';
+  if (/pending uploads/i.test(msg)) return '';
+  return 'A move of this item into that warehouse may not have uploaded yet — '
+    + 'check pending uploads before discarding this.';
+}
+
 $('failBanner').onclick = async () => {
   const failed = await OB.failedItems();
   openSheet({
@@ -1716,11 +2932,16 @@ $('failBanner').onclick = async () => {
         <div style="display:flex;gap:var(--s-2);align-items:center">
           <span class="row-main">
             <span class="row-sku">${esc(f.type)} · ${esc(f.sku)}</span>
-            <span class="row-desc">${n(f.payload.qty)}${f.payload.damagedQty ? ` (${n(f.payload.damagedQty)} dmg)` : ''} · ${when(f.clientTs)}</span>
+            <span class="row-desc">${f.type === 'TRANSFER'
+                ? `${esc(f.facility || '?')} → ${esc(f.toFacility || '?')}`
+                : esc(f.facility || 'no warehouse')} · ${n(f.payload.qty)}${f.payload.damagedQty ? ` (${n(f.payload.damagedQty)} dmg)` : ''} · ${when(f.clientTs)}</span>
           </span>
         </div>
         <div style="font-size:var(--fs-sm);color:var(--rsa-red);font-weight:var(--fw-6)">
           ${esc(f.error?.message || 'Rejected')}</div>
+        ${rejectionHint(f)
+          ? `<div style="font-size:var(--fs-sm);color:var(--sea)">${esc(rejectionHint(f))}</div>`
+          : ''}
         <div class="btn-row">
           <button class="btn btn-ghost" data-retry="${f.seq}">Try again</button>
           <button class="btn btn-danger" data-discard="${f.seq}">Discard</button>
@@ -1760,7 +2981,9 @@ $('syncPill').onclick = async () => {
         ${queue.length} ${queue.length === 1 ? 'entry' : 'entries'} saved on this phone, waiting to upload.</p>
       ${queue.map(q => `<div class="mv">
         <span class="t"><b>${esc(q.type)}</b> ${esc(q.sku)}
-          <span class="when">${when(q.clientTs)} · ${esc(q.recordedBy)}</span>
+          <span class="when">${q.type === 'TRANSFER'
+              ? `${esc(q.facility || '?')} → ${esc(q.toFacility || '?')}`
+              : esc(q.facility || 'no warehouse')} · ${when(q.clientTs)} · ${esc(q.recordedBy)}</span>
           ${q.lastError ? `<span class="when" style="color:var(--rsa-red)">${esc(q.lastError.message)}</span>` : ''}
         </span>
         <span class="q">${n(q.payload.qty)}</span>
