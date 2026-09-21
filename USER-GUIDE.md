@@ -24,13 +24,14 @@ chip at the top right → **Change name**.
 
 ---
 
-## 2. The four tabs at the bottom
+## 2. The five tabs at the bottom
 
 | Tab | What it's for |
 |---|---|
 | **Balance** | The home screen. What's in the yard right now, per item. |
 | **Receive** | Stock arriving. This is where damages on arrival are recorded. |
 | **Issue** | Stock going out. |
+| **Activity** | Every movement ever recorded, newest first. Fix or cancel a mistake here. |
 | **Items** | The item list. Add a new SKU or fix a description. |
 
 ---
@@ -101,6 +102,49 @@ arrive one after another. Only the numbers clear.
 The confirmation spells out exactly what changes, and the app reminds you: **the
 total stays the same**. The pieces haven't left the yard, they've just moved from
 good to damaged.
+
+---
+
+## 6b. Fixing a mistake — the Activity tab
+
+Open **Activity**. Every movement is there, newest at the top, across every
+warehouse and every item. Anything still waiting to upload sits above the rest
+with a ⟳ next to it.
+
+Two buttons sit under each entry:
+
+**Correct** — you typed the wrong number. Tap it and the Receive or Issue form
+opens already filled in with everything that was recorded. Change what was
+wrong and save. The original is cancelled at the moment you save, not before,
+so if you change your mind just switch tabs and nothing at all has happened.
+
+**Cancel entry** — the whole entry should not be there. Tap it, confirm, and the
+stock goes back to what it was.
+
+### Nothing is ever deleted
+
+A cancelled entry stays on the list with a line through it and a **CANCELLED**
+stamp. The Sheet gets a new row recording the cancellation, who did it and when.
+That is deliberate: it is the difference between a mistake being fixed and stock
+quietly disappearing, and with no login on this app it is the only thing that
+keeps the yard's numbers trustworthy.
+
+### Things it will not let you do
+
+- **Cancel something twice.** The button disappears once an entry is cancelled.
+- **Cancel a cancellation.** Same reason.
+- **Cancel stock that has already moved on.** If you received 100 and 80 have
+  since been issued, cancelling the receipt would leave the yard on minus 80 —
+  so it is refused, and it says so. Record what actually happened instead.
+- **Correct a transfer, an opening balance or a damage entry.** Those can only
+  be cancelled, then re-entered.
+
+### This one needs signal
+
+Recording stock works with no signal at all. Cancelling and correcting do not —
+they need a connection, because the correction has to be agreed with the Sheet
+before it counts. If you are out of range it will tell you, and nothing is lost:
+try again when you have a bar.
 
 ---
 

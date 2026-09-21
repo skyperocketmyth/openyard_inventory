@@ -307,6 +307,26 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 .mv .q{font-weight:var(--fw-8);font-variant-numeric:tabular-nums}
 .mv .when{font-size:var(--fs-xs);color:var(--muted)}
 .mv.IN{color:var(--good-ink)} .mv.OUT{color:var(--rsa-blue)} .mv.DMG{color:var(--rsa-red)}
+/* A cancelled entry is struck through and dimmed, never removed: the row IS
+   the audit trail. It keeps its original IN/OUT/DMG colour so the eye can
+   still tell what kind of movement was undone. */
+.mv.is-cancelled{opacity:.5}
+.mv.is-cancelled .t b, .mv.is-cancelled .q{text-decoration:line-through}
+.mv-row{display:block;padding:var(--s-3) 0;border-bottom:1px solid var(--border)}
+.mv-row:last-child{border-bottom:none}
+.mv-row .mv{border-bottom:none;padding:0}
+/* The action strip under a row. Buttons are full tap height because this is
+   the one screen where a mis-tap rewrites stock. */
+.mv-acts{display:flex;gap:var(--s-2);margin-top:var(--s-2)}
+.mv-acts .btn{flex:1;min-height:var(--tap-min);font-size:var(--fs-sm);padding:0 var(--s-3)}
+.mv-tag{font-size:var(--fs-xs);font-weight:var(--fw-8);padding:2px 8px;border-radius:var(--r-pill);
+  background:var(--rsa-red-tint);color:var(--rsa-red-700)}
+/* Shown at the top of Receive/Issue while that form is replacing an entry the
+   user asked to correct. Loud on purpose — saving will cancel the original. */
+.correct-note{background:var(--sea-tint);border:1px solid var(--sea);color:var(--sea);
+  border-radius:var(--r-md);padding:var(--s-3);margin-bottom:var(--s-4);
+  font-size:var(--fs-sm);line-height:1.5}
+.correct-note b{font-weight:var(--fw-8)}
 .pending-tag{font-size:var(--fs-xs);font-weight:var(--fw-8);color:var(--sea);
   background:var(--sea-tint);padding:2px 8px;border-radius:var(--r-pill)}
 </style>
@@ -397,6 +417,7 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 
 <!-- ===================== S2 RECEIVE ===================== -->
 <section class="screen" id="scr-receive">
+  <div class="correct-note" id="rcvCorrecting" hidden></div>
   <div class="field">
     <span class="field-label eyebrow">Warehouse <span class="req">*</span></span>
     <button class="item-select" id="rcvFac" data-fac-picker="rcv">
@@ -461,6 +482,7 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 
 <!-- ===================== S3 ISSUE ===================== -->
 <section class="screen" id="scr-issue">
+  <div class="correct-note" id="issCorrecting" hidden></div>
   <div class="field">
     <span class="field-label eyebrow">Warehouse <span class="req">*</span></span>
     <button class="item-select" id="issFac" data-fac-picker="iss">
@@ -530,11 +552,24 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
   <button class="fab" id="fabAddItem" aria-label="Add item">+</button>
 </section>
 
+<!-- ===================== S5 ACTIVITY ===================== -->
+<!--
+  Every movement in the yard, newest first, across every warehouse and item.
+  Unlike the per-item history inside an item sheet, this screen is the one
+  place an entry can be UNDONE — so it is also the only screen that needs the
+  server. A cancellation writes a reversing row; it never erases anything.
+-->
+<section class="screen" id="scr-activity">
+  <div class="eyebrow" id="actCount" style="margin-bottom:var(--s-2)"></div>
+  <div id="actList"></div>
+</section>
+
 <!-- ===================== TAB BAR ===================== -->
 <nav class="tabbar" id="tabbar" hidden>
   <button class="tab" data-screen="balance" aria-current="page"><span class="g">📊</span>Balance</button>
   <button class="tab" data-screen="receive"><span class="g">⬇</span>Receive</button>
   <button class="tab" data-screen="issue"><span class="g">⬆</span>Issue</button>
+  <button class="tab" data-screen="activity"><span class="g">🕑</span>Activity</button>
   <button class="tab" data-screen="items"><span class="g">☰</span>Items</button>
 </nav>
 
@@ -562,7 +597,7 @@ import * as SY from './lib/sync.js';
 
 /* ================= configuration ================= */
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn/exec';
-window.OY_APP_VERSION = '1.1.0';
+window.OY_APP_VERSION = '1.2.0';
 configure(SCRIPT_URL);
 
 const $ = id => document.getElementById(id);
@@ -581,6 +616,10 @@ const ui = {
   // a yard-specific place, which is the exception 10.A asks for.
   rcvFacility: '', issFacility: '',
   pickerTarget: null,
+  // Set only while a Receive/Issue form is standing in for an entry the user
+  // asked to correct: `{ txnId, screen }`. Cleared by show(), so leaving the
+  // form by ANY route abandons the correction with nothing written.
+  correcting: null,
   usersLoaded: false,      // distinguishes "no names" from "not loaded yet"
   sheetStack: []
 };
@@ -886,7 +925,8 @@ async function renderSync() {
 }
 
 /* ================= navigation ================= */
-const TITLES = { balance:'Balance', receive:'Receive', issue:'Issue', items:'Items', name:'' };
+const TITLES = { balance:'Balance', receive:'Receive', issue:'Issue', items:'Items',
+  activity:'Activity', name:'' };
 
 /**
  * @param {string} screen
@@ -905,6 +945,12 @@ const TITLES = { balance:'Balance', receive:'Receive', issue:'Issue', items:'Ite
  * written yet.
  */
 function show(screen, facility) {
+  // Abandoning a correction must be the DEFAULT, not something to remember.
+  // Clearing here means every exit — tab bar, back button, a jump from the
+  // balance screen — drops it, and only askCorrect re-arms it immediately
+  // after its own show() call.
+  ui.correcting = null;
+  paintCorrectNote();
   if (screen === 'receive') ui.rcvFacility = normFacility(facility || '');
   if (screen === 'issue') ui.issFacility = normFacility(facility || '');
   ui.screen = screen;
@@ -937,6 +983,7 @@ async function render() {
   else if (ui.screen === 'items') renderItems();
   else if (ui.screen === 'receive') await renderReceive();
   else if (ui.screen === 'issue') await renderIssue();
+  else if (ui.screen === 'activity') await renderActivity();
   else if (ui.screen === 'name') renderNames();
 }
 
@@ -1664,6 +1711,282 @@ async function loadMoves(sku, facility) {
   if ($('dtMoves')) $('dtMoves').innerHTML = localHtml + serverHtml;
 }
 
+/* ================= activity (all movements) =================
+ *
+ * The only screen that can UNDO an entry, and therefore the only screen that
+ * insists on a connection.
+ *
+ * Cancelling is online-only ON PURPOSE. The upload queue in lib/outbox.js
+ * speaks exactly one server action (`submitTxnBatch`), and teaching it a
+ * second one means touching the head-of-line ordering that guards every
+ * balance in the yard — the most delicate code here, and the place a silent
+ * stock bug would hurt most. Recording stock stays fully offline; correcting
+ * a mistake can wait for a bar of signal. lib/deltas.js already carries the
+ * VOID case, so queueing a cancellation is a small change later if the yard
+ * asks for it.
+ *
+ * It is also SAFE to retry a cancellation that timed out: the server refuses
+ * to void the same entry twice (ALREADY_VOIDED), so a double tap on a flaky
+ * connection cannot double-reverse the stock.
+ */
+
+/** Only these two have an entry screen to prefill, so only these two offer Correct. */
+const CORRECTABLE = { INBOUND: 'receive', OUTBOUND: 'issue' };
+
+function newVoidKey() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return 'v_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 12);
+}
+
+/**
+ * Post a cancellation and fold in the balances it replies with.
+ * Throws ApiError on refusal, so every caller decides what to say.
+ */
+async function sendVoid(txnId, reason) {
+  const { apiPost } = await import('./lib/api.js');
+  const res = await apiPost('voidTxn', {
+    txnId,
+    idemKey: newVoidKey(),
+    recordedBy: prefs.getUser(),
+    reason: reason || '',
+    deviceId: prefs.getDeviceId(),
+    appVersion: window.OY_APP_VERSION || '1.0.0'
+  });
+  const balances = (res.data && res.data.balances) || [];
+  if (balances.length) await SY.mergeBalances(balances);
+  return res.data || {};
+}
+
+/** Turn an ApiError from a cancellation into something readable in a yard. */
+function voidErrorText(err) {
+  const code = err && err.code;
+  if (code === 'NETWORK' || code === 'NOT_CONFIGURED') {
+    return 'Cancelling needs a connection. Recording still works offline.';
+  }
+  if (code === 'ALREADY_VOIDED') return 'That entry was already cancelled.';
+  // WOULD_GO_NEGATIVE and BAD_REQUEST already read as plain English.
+  return (err && err.message) || 'Could not cancel that entry.';
+}
+
+async function renderActivity() {
+  const list = $('actList');
+  const count = $('actCount');
+  if (!list) return;
+
+  // Queued entries first: they are the newest thing that happened, and the
+  // ones the user is most likely looking for. They carry no actions — there
+  // is nothing on the server yet to cancel.
+  const queued = await OB.pendingItems();
+  const queuedHtml = queued.slice().reverse().map(it => {
+    const t = String(it.type || '').toUpperCase();
+    const route = t === 'TRANSFER'
+      ? `${esc(it.facility)} → ${esc(it.toFacility)}`
+      : esc(it.facility || '');
+    return `<div class="mv-row"><div class="mv ${MV_CLASS[t] || 'DMG'}">
+      <span class="t"><b>${esc(MV_LABEL[t] || t)}</b> · ${esc(it.sku)}
+        <span class="when">${route}${route ? ' · ' : ''}${esc(it.recordedBy || '')} · not uploaded yet</span></span>
+      <span class="q">${n(it.payload && it.payload.qty)}</span>
+      <span class="pending-tag">⟳</span>
+    </div></div>`;
+  }).join('');
+
+  let serverHtml = '';
+  let shown = 0;
+  try {
+    const { apiGet } = await import('./lib/api.js');
+    // No sku and no facility = every movement, newest first. 500 is the
+    // server's hard cap; 200 keeps the list quick to scroll on a phone.
+    const res = await apiGet('getLedger', { limit: '200' });
+    const rows = (res.data && res.data.rows) || [];
+    shown = rows.length;
+
+    // An entry is cancelled when some OTHER row names it in `voidOf`.
+    const cancelled = new Set();
+    for (const r of rows) if (r.voidOf) cancelled.add(r.voidOf);
+
+    serverHtml = rows.length ? rows.map(r => {
+      const type = String(r.type || '').toUpperCase();
+      const isVoid = type === 'VOID';
+      const isCancelled = cancelled.has(r.txnId);
+      const cls = MV_CLASS[type] || 'DMG';
+      const label = MV_LABEL[type] || type;
+      const where = type === 'TRANSFER'
+        ? `${esc(r.facility)} → ${esc(r.toFacility)}`
+        : esc(r.facility || '');
+      const extra = r.damagedQty > 0 && type === 'INBOUND' ? ` (${n(r.damagedQty)} dmg)` : '';
+
+      // Nothing to undo on a cancellation, and nothing to undo twice. The
+      // server refuses both anyway — this only keeps the button off screen.
+      const canAct = !isVoid && !isCancelled;
+      const acts = canAct ? `<div class="mv-acts">
+          ${CORRECTABLE[type] ? `<button class="btn btn-ghost" data-correct="${esc(r.txnId)}">Correct</button>` : ''}
+          <button class="btn btn-danger" data-cancel="${esc(r.txnId)}">Cancel entry</button>
+        </div>` : '';
+
+      return `<div class="mv-row" data-txn="${esc(r.txnId)}">
+        <div class="mv ${cls}${isCancelled ? ' is-cancelled' : ''}">
+          <span class="t"><b>${esc(label)}</b>${extra} · ${esc(r.sku)}
+            <span class="when">${where ? where + ' · ' : ''}${esc(r.recordedBy)} · ${when(r.clientTs || r.serverTs)}</span>
+            ${r.vehicleNo ? `<span class="when">🚚 ${esc(r.vehicleNo)}</span>` : ''}
+            ${r.refNo ? `<span class="when">${esc(r.refNo)}</span>` : ''}
+            ${r.remarks ? `<span class="when">${esc(r.remarks)}</span>` : ''}</span>
+          <span class="q">${n(r.qty)}</span>
+          ${isCancelled ? '<span class="mv-tag">CANCELLED</span>' : ''}
+        </div>${acts}</div>`;
+    }).join('') : '<p style="color:var(--muted);font-size:var(--fs-sm)">No movements recorded yet.</p>';
+  } catch {
+    serverHtml = '<p style="color:var(--muted);font-size:var(--fs-sm)">'
+      + 'Uploaded movements need a connection. Anything still waiting to upload is listed above.</p>';
+  }
+
+  list.innerHTML = queuedHtml + serverHtml;
+  count.textContent = shown
+    ? `${shown} movement${shown === 1 ? '' : 's'}${queued.length ? ` · ${queued.length} waiting to upload` : ''}`
+    : (queued.length ? `${queued.length} waiting to upload` : '');
+
+  for (const b of list.querySelectorAll('[data-cancel]')) {
+    b.onclick = () => askCancel(b.dataset.cancel);
+  }
+  for (const b of list.querySelectorAll('[data-correct]')) {
+    b.onclick = () => askCorrect(b.dataset.correct);
+  }
+}
+
+/** Read one row back off the server, by id. */
+async function fetchTxn(txnId) {
+  const { apiGet } = await import('./lib/api.js');
+  const res = await apiGet('getLedger', { limit: '200' });
+  const rows = (res.data && res.data.rows) || [];
+  return rows.find(r => r.txnId === txnId) || null;
+}
+
+function askCancel(txnId) {
+  confirmSheet({
+    title: 'Cancel this entry?',
+    message: 'The entry stays visible, struck through, and the stock goes back to what it '
+      + 'was. Nothing is deleted — everyone can still see it happened, and who cancelled it.',
+    confirmLabel: 'Cancel entry',
+    danger: true,
+    onConfirm: async () => {
+      try {
+        await sendVoid(txnId, '');
+        toast('Entry cancelled. Stock corrected.');
+      } catch (err) {
+        toast(voidErrorText(err), 'error');
+      }
+      await render();
+    }
+  });
+}
+
+/**
+ * Correct = cancel the original, then hand back a form already filled in.
+ *
+ * The cancellation is deliberately NOT sent here. It is sent when the
+ * replacement is saved (see `commitCorrection`), so a user who opens the form
+ * and walks away has changed nothing. Sending it up front was the obvious
+ * design and the wrong one: an abandoned correction would leave the yard
+ * short by the original quantity, with a struck-through row and no
+ * replacement to explain it.
+ */
+async function askCorrect(txnId) {
+  const row = await fetchTxn(txnId).catch(() => null);
+  if (!row) { toast('Could not read that entry — check the connection.', 'error'); return; }
+  const screen = CORRECTABLE[String(row.type || '').toUpperCase()];
+  if (!screen) { toast('That kind of entry can only be cancelled.', 'error'); return; }
+
+  confirmSheet({
+    title: 'Correct this entry?',
+    message: 'The form opens filled in with what was recorded. Change what was wrong and save. '
+      + 'The original is cancelled at that moment — not before — so you can back out safely '
+      + 'by switching tabs.',
+    confirmLabel: 'Correct it',
+    onConfirm: async () => {
+      if (screen === 'receive') {
+        ui.rcvSku = row.sku;
+        show('receive', row.facility);
+        $('rcvQty').value = String(row.qty);
+        $('rcvDmg').value = String(row.damagedQty || 0);
+        $('rcvRef').value = row.refNo || '';
+        $('rcvNote').value = row.remarks || '';
+        await paintReceive();
+      } else {
+        ui.issSku = row.sku;
+        show('issue', row.facility);
+        $('issQty').value = String(row.qty);
+        $('issRef').value = row.refNo || '';
+        $('issVehicle').value = row.vehicleNo || '';
+        $('issNote').value = row.remarks || '';
+        await paintIssue();
+      }
+      // AFTER show(), which clears it — see the top of show().
+      // The original's sku/facility/qty ride along because the Issue screen
+      // has to know how much stock the pending cancellation is about to hand
+      // back. Without it, correcting an issue of 100 down to 90 is refused
+      // for "not enough stock" whenever the yard is nearly empty — the 100
+      // that is about to come back is not in `projectedFor` yet.
+      ui.correcting = {
+        txnId: row.txnId, screen, type: String(row.type || '').toUpperCase(),
+        sku: row.sku, facility: row.facility, qty: Number(row.qty) || 0
+      };
+      paintCorrectNote();
+    }
+  });
+}
+
+/**
+ * How much stock the pending cancellation is about to hand back to this exact
+ * (warehouse, item) — 0 unless a correction is in progress AND the form still
+ * points at the same place the original did.
+ *
+ * The match matters. Change the warehouse or the item on a correction form and
+ * the original's stock returns to where the ORIGINAL was recorded, not to
+ * where the replacement is going, so the allowance must not follow the form.
+ */
+function correctionAllowance(facility, sku) {
+  const c = ui.correcting;
+  if (!c || c.type !== 'OUTBOUND') return 0;
+  if (normFacility(c.facility) !== normFacility(facility)) return 0;
+  if (normSku(c.sku) !== normSku(sku)) return 0;
+  return c.qty;
+}
+
+/** The banner that says this form is replacing an entry, and which one. */
+function paintCorrectNote() {
+  for (const pair of [['rcvCorrecting', 'receive'], ['issCorrecting', 'issue']]) {
+    const el = $(pair[0]);
+    if (!el) continue;
+    const on = !!(ui.correcting && ui.correcting.screen === pair[1]);
+    el.hidden = !on;
+    if (on) {
+      el.innerHTML = `<b>Correcting entry ${esc(ui.correcting.txnId)}.</b> Saving will cancel the `
+        + 'original and record this in its place. Switch tabs to back out — nothing has changed yet.';
+    }
+  }
+}
+
+/**
+ * Called from the Receive/Issue submit handlers BEFORE anything is queued.
+ * Returns true when it is safe to carry on saving.
+ *
+ * Cancel first, save second. The other order leaves a duplicate behind when
+ * the cancellation is refused — and it is refused for a real reason:
+ * WOULD_GO_NEGATIVE means the stock has already moved on, and a plain
+ * correction is no longer the honest record.
+ */
+async function commitCorrection() {
+  if (!ui.correcting) return true;
+  try {
+    await sendVoid(ui.correcting.txnId, 'corrected');
+    ui.correcting = null;
+    paintCorrectNote();
+    return true;
+  } catch (err) {
+    toast(voidErrorText(err), 'error');
+    return false;
+  }
+}
+
 /* ================= item picker ================= */
 async function openPicker(target) {
   ui.pickerTarget = target;
@@ -1925,6 +2248,10 @@ $('rcvSubmit').onclick = async () => {
   }
 
   btn.disabled = true;
+  // Cancel the entry being corrected BEFORE queueing its replacement. If the
+  // server refuses (no connection, or the stock has already moved on) nothing
+  // is written at all and the form stays exactly as the user left it.
+  if (!await commitCorrection()) { btn.disabled = false; return; }
   const { settled } = await OB.enqueue({
     type: 'INBOUND', sku, facility: fac,
     payload: { qty, damagedQty: dmg, refNo: $('rcvRef').value.trim(), remarks: $('rcvNote').value.trim() },
@@ -1977,7 +2304,13 @@ async function paintIssue() {
   let good = 0;
   if (item && fac) {
     const b = await SY.projectedFor(fac, sku);
-    good = b.good;
+    // A correction is about to hand the original quantity back to this yard,
+    // so it is genuinely available to the replacement. Counting it here keeps
+    // the screen, the "All" chip and the submit gate agreeing with the check
+    // in the submit handler — three places that must never disagree about
+    // how much can leave a yard.
+    const back = correctionAllowance(fac, sku);
+    good = b.good + back;
     av.hidden = false;
     av.className = 'avail' + (good <= 0 ? ' zero' : '');
     av.innerHTML = `
@@ -1987,7 +2320,8 @@ async function paintIssue() {
       ${stockBar(b.total, b.damaged)}
       <div class="sub">${good <= 0
         ? `Nothing available to issue at ${esc(fac)}.`
-        : `${n(b.total)} total · ${n(b.damaged)} damaged can't be issued`}</div>`;
+        : `${n(b.total)} total · ${n(b.damaged)} damaged can't be issued`
+          + (back ? ` · includes ${n(back)} coming back from the entry being corrected` : '')}</div>`;
     $('issAll').textContent = `All ${n(good)}`;
   } else {
     av.hidden = true;
@@ -2069,8 +2403,12 @@ $('issSubmit').onclick = async () => {
   // Last gate before a real movement: re-check against THIS yard, not the
   // figure the screen was painted with.
   const before = await SY.projectedFor(fac, sku);
-  if (qty > before.good) { await paintIssue(); return; }
+  if (qty > before.good + correctionAllowance(fac, sku)) { await paintIssue(); return; }
   $('issSubmit').disabled = true;
+
+  // Cancel the entry being corrected BEFORE queueing its replacement, and
+  // stop dead if the server refuses — see the Receive handler.
+  if (!await commitCorrection()) { $('issSubmit').disabled = false; return; }
 
   const vehicleNo = $('issVehicle').value.trim().toUpperCase();
   const { settled } = await OB.enqueue({

@@ -8,6 +8,7 @@ Script backend with a Google Sheet as the database.
 ```
 docs/            the app — GitHub Pages serves this folder (own origin)
   index.html     every screen, one file, no build step
+                 (Balance · Receive · Issue · Activity · Items)
   sw.js          service worker — BUMP `CACHE` on every change to docs/
   lib/*.js       ES modules: deltas, idb, api, outbox, sync
         |
@@ -77,6 +78,27 @@ on the right total. `OPENING` is enforced once-per-SKU for the same reason.
   "All warehouses" stock view is view-only and offers no action buttons at all,
   which is what makes this structural rather than a check to remember. See
   `uiFacility` in `docs/index.html` and PLAN finding F10.
+- **Do not send a correction's cancellation before the replacement is saved.**
+  `askCorrect` only prefills the form; `commitCorrection`, called from the
+  Receive/Issue submit handlers, is what sends the `voidTxn` — and it returns
+  false, stopping the save, when the server refuses. Voiding up front is the
+  obvious design and it shrinks the yard every time someone opens a correction
+  and changes their mind. `ui.correcting` is cleared by `show()` so abandoning
+  is the default; the one dangerous consequence is a stale `ui.correcting`
+  attaching itself to the NEXT unrelated entry, which is what
+  `verify-activity.mjs` checks by recording a plain entry afterwards.
+- **Do not gate an Issue correction on `projectedFor` alone.** The pending
+  cancellation is about to hand the original quantity back, so
+  `correctionAllowance` adds it — in `paintIssue` AND in the submit handler,
+  which must agree. It returns 0 unless the form still names the same
+  warehouse and item the original did, because the stock returns to where the
+  original was recorded, not to wherever the form now points.
+- **Do not put cancelling into the outbox without re-reading its invariants.**
+  `flush()` speaks only `submitTxnBatch`. Cancelling is online-only on
+  purpose; `docs/lib/deltas.js` already carries the `VOID` case and
+  `entryKeys` would key it correctly off the original's facility/sku, so the
+  change is small — but it lands in the head-of-line ordering that guards
+  every balance in the yard.
 - **Do not open a sheet from inside a sheet and expect to come back.** There is
   one sheet; `openSheet` replaces its contents. A form that needs a sub-choice
   uses inline chips, or re-opens itself from the callback. And never
@@ -114,6 +136,7 @@ npm run serve             # docs/ on http://127.0.0.1:8787/  (leave running)
 node scripts/verify-mobile.mjs     http://127.0.0.1:8787/   # 18 layout checks
 node scripts/verify-flows.mjs      http://127.0.0.1:8787/   # 8 interaction checks
 node scripts/verify-facilities.mjs http://127.0.0.1:8787/   # 34 warehouse-UI checks
+node scripts/verify-activity.mjs   http://127.0.0.1:8787/   # 41 Activity/cancel/correct checks
 ```
 
 `verify-facilities` seeds warehouses into the throwaway browser profile (never the Sheet)

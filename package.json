@@ -15,6 +15,7 @@
     "verify:flows": "node scripts/verify-flows.mjs",
     "verify:sku": "node scripts/verify-numeric-sku.mjs",
     "verify:facilities": "node scripts/verify-facilities.mjs",
+    "verify:activity": "node scripts/verify-activity.mjs",
     "serve": "node scripts/serve.mjs docs 8787",
     "smoke": "node scripts/smoke.mjs",
     "verify:norevert": "node scripts/verify-no-revert.mjs",
