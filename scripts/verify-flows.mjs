@@ -28,7 +28,9 @@ const URL_UNDER_TEST = (u => {
   const stripped = u.replace(/(?:index\.html)?(?:[?#].*)?$/, '');
   return stripped.endsWith('/') ? stripped : stripped + '/';
 })(process.argv[2]);
-const PORT = 9335;
+// Overridable so several runs can be in flight without fighting over one
+// debugging port — scripts/mutate.mjs sets a different one per case.
+const PORT = Number(process.env.CDP_PORT) || 9335;
 const CHROME = process.env.CHROME_PATH
   || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 

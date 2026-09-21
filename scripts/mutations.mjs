@@ -43,7 +43,13 @@ export default [
         + '    - offsetMsAt(at);',
     replace: '  const d0 = new Date(at); d0.setHours(0, 0, 0, 0);' + '\n'
       + '  const midnight = d0.getTime(); // MUTANT: device midnight',
-    expect: ["today starts at Dubai midnight, not the device's"]
+    // NOT the obvious check. "today starts at Dubai midnight, not the device's"
+    // stays GREEN under this mutation on any machine already set to Dubai —
+    // which is every machine this project is developed on — because there the
+    // device midnight and Dubai midnight are the same instant. Only the test
+    // that re-runs under a forced TZ can tell the difference, which is the
+    // entire reason it exists. The runner found this by reporting SURVIVED.
+    expect: ['the same answers come back under any process timezone']
   },
   {
     name: 'Yesterday loses its upper bound',
@@ -102,7 +108,12 @@ export default [
     file: 'gas/Code.js',
     find: '    if (oldest !== null && oldest < sinceMs) break;',
     replace: '    break; // MUTANT: always stop after one block',
-    expect: ['reading today does not read the whole tab']
+    // 'reading today does not read the whole tab' CANNOT catch this: its
+    // fixture has 903 rows but only 3 inside the window, and all 3 sit in the
+    // last block, so stopping after one block loses nothing. The stop is only
+    // observable when the window is wider than a block. The runner reported
+    // SURVIVED, and that is what the check below was written for.
+    expect: ['a window WIDER than one read block is not cut short at the block edge']
   },
 
   {

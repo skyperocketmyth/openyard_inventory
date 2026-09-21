@@ -326,3 +326,29 @@ test('the early stop survives an unreadable timestamp mid-history', () => {
   assert.equal(res.rows.length, 5, 'all five real rows still come back');
   assert.ok(!ids(res).includes('OY-JUNK'), 'and the junk row is not in the window');
 });
+
+test('a window WIDER than one read block is not cut short at the block edge', () => {
+  // THE HOLE THE MUTATION RUNNER FOUND. The test above has 903 rows but only 3
+  // inside the window, and all 3 sit in the last block — so replacing the
+  // early-stop condition with an unconditional `break` lost nothing and the
+  // mutation survived.
+  //
+  // The stop can only be caught when the WINDOW itself spans more than one
+  // block. 900 rows recorded today, asked for with the 500-row cap: a correct
+  // read walks back through three blocks and fills the cap, while a read that
+  // stops after the first returns 400 and — worse than being short — claims
+  // `more: false`, presenting a truncated list as the whole day.
+  const many = [];
+  const base = Date.parse('2026-09-20T20:30:00.000Z');   // 00:30 Dubai, today
+  for (let i = 0; i < 900; i++) {
+    const t = new Date(base + i * 30000);
+    many.push(row('TDY-' + i, 'WIDGET-A', 1, t, t));
+  }
+  const ctx = request(baseBook(many));
+  const res = ctx.getLedgerRead_('', '500', '', DUBAI.todayStart, '');
+  assert.equal(res.rows.length, 500,
+    'the cap must be filled from a window three blocks deep, not one');
+  assert.equal(res.more, true, 'and it must admit there is more behind it');
+  assert.equal(ids(res)[0], 'TDY-899', 'newest first, from the true end of the tab');
+  assert.equal(ids(res)[499], 'TDY-400', 'and continuous across every block boundary');
+});

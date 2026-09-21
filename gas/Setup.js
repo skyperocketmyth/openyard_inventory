@@ -634,3 +634,103 @@ function runTests() {
   Logger.log(JSON.stringify(result, null, 2));
   return result;
 }
+
+/* ------------------------------------------------------------------ *
+ * normaliseTimestamps — a one-off, for rows written before Dubai time.
+ *
+ * NOT IN route_, for the same reason as migrateToV2: `action=setup` is an
+ * UNAUTHENTICATED GET on an ANYONE_ANONYMOUS deployment, and anything that
+ * rewrites Ledger cells must not be a public button. Run it by hand from the
+ * Apps Script editor, once. Do not add a case for it.
+ *
+ * WHAT IT IS FOR. A Sheets number format only renders a real Date. Every row
+ * written from the Dubai-time change onward stores `client_ts` and
+ * `last_txn_ts` as Dates (see `sheetTs_`), so they lay out as
+ * DD-MM-YYYY HH:MM:SS — but the rows already in the book hold ISO STRINGS,
+ * which ignore the format and sit there as raw UTC text next to a properly
+ * formatted `server_ts`. This converts those, and nothing else.
+ *
+ * WHY IT IS SAFE TO RUN, AND TO RE-RUN:
+ *  - it only ever replaces a parseable ISO string with a Date carrying the
+ *    SAME INSTANT — no value is reinterpreted, rounded or moved;
+ *  - anything it cannot parse is left exactly as it is and counted;
+ *  - a cell that is already a Date is skipped, so it is idempotent;
+ *  - it touches two columns and never a row's identity, quantity or type;
+ *  - every reader of both columns already handles either shape
+ *    (`instanceof Date ? toISOString() : str_()`), so the in-memory ISO
+ *    strings the balance comparisons depend on are unchanged either way.
+ *
+ * It writes each column in ONE setValues, inside the script lock, so a
+ * concurrent append cannot interleave with it.
+ * ------------------------------------------------------------------ */
+
+function normaliseTimestamps() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_MS)) {
+    return { error: 'Server busy — a write is in progress. Try again in a moment.' };
+  }
+  try {
+    var jobs = [
+      { tab: T_LEDGER, col: LX.client_ts + 1, want: 'client_ts' },
+      { tab: T_SNAP, col: SX.last_txn_ts + 1, want: 'last_txn_ts' }
+    ];
+    var report = [];
+    for (var j = 0; j < jobs.length; j++) {
+      var job = jobs[j];
+      var sh = ss_().getSheetByName(job.tab);
+      if (!sh) { report.push({ tab: job.tab, skipped: 'no such tab' }); continue; }
+
+      // Same header-position guard as ensureTabs_: on a book whose columns have
+      // moved, this index points at somebody else's data, and converting THAT
+      // would be the one destructive thing in here.
+      var head = String(sh.getRange(1, job.col).getValue() || '').trim().toLowerCase();
+      if (head !== job.want) {
+        report.push({ tab: job.tab, skipped: 'expected "' + job.want + '" at column '
+          + job.col + ', found "' + head + '"' });
+        continue;
+      }
+
+      var last = sh.getLastRow();
+      if (last < 2) { report.push({ tab: job.tab, rows: 0, converted: 0 }); continue; }
+
+      var rng = sh.getRange(2, job.col, last - 1, 1);
+      var vals = rng.getValues();
+      var converted = 0, alreadyDates = 0, blank = 0, unparseable = [];
+      for (var i = 0; i < vals.length; i++) {
+        var v = vals[i][0];
+        if (v instanceof Date) { alreadyDates++; continue; }
+        var s = str_(v);
+        if (!s) { blank++; continue; }
+        var ms = tsMs_(s);
+        if (ms === null) {
+          // Left exactly as found. A cell nobody can read is still a record of
+          // something, and guessing at it would be worse than leaving it ugly.
+          if (unparseable.length < 10) unparseable.push('row ' + (i + 2) + ': ' + s);
+          continue;
+        }
+        vals[i][0] = new Date(ms);
+        converted++;
+      }
+      if (converted) rng.setValues(vals);
+      report.push({
+        tab: job.tab, column: job.want, rows: vals.length,
+        converted: converted, alreadyDates: alreadyDates, blank: blank,
+        unparseable: unparseable.length, unparseableSamples: unparseable
+      });
+    }
+    SpreadsheetApp.flush();
+    // The formats live in ensureTabs_ and are idempotent, so re-applying them
+    // here means one run leaves the book both converted AND formatted.
+    var setup = ensureTabs_();
+    var out = {
+      ok: true, report: report,
+      datesFormatted: setup.datesFormatted,
+      datesSkipped: setup.datesSkipped,
+      timeZone: setup.timeZone
+    };
+    Logger.log(JSON.stringify(out, null, 2));
+    return out;
+  } finally {
+    lock.releaseLock();
+  }
+}

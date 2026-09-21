@@ -78,6 +78,17 @@ on the right total. `OPENING` is enforced once-per-SKU for the same reason.
   "All warehouses" stock view is view-only and offers no action buttons at all,
   which is what makes this structural rather than a check to remember. See
   `uiFacility` in `docs/index.html` and PLAN finding F10.
+- **Do not test anything environment-dependent without forcing the
+  environment to differ.** `test/dates.test.mjs` re-runs its core assertions in
+  child processes with `TZ=UTC` and `TZ=America/Los_Angeles`, because every
+  other assertion in it passes trivially on a machine already set to Dubai —
+  which is every machine this is developed on. A mutation swapping the pinned
+  zone for the device's was invisible to all of them and caught only by that
+  one. The same applies to locale, encoding and path separators.
+- **Do not size a paging fixture smaller than the page.** `ledgerRowsSince_`
+  reads in 400-row blocks; a test with 903 rows but only 3 inside the window
+  had all 3 in the first block, so an unconditional `break` passed it. The
+  block-boundary test is the one that holds that code honest.
 - **Do not format a date anywhere but `docs/lib/dates.js`.** Every timestamp
   the app shows goes through `when()`, which is now a one-line delegate to
   `fmtDubai`, and every column that holds one in the Sheet carries
@@ -127,6 +138,14 @@ on the right total. `OPENING` is enforced once-per-SKU for the same reason.
   `history.back()`, open pushes a state, and the two race.
 - **Do not assert on HTTP status.** Apps Script serves its own error pages at
   200. Assert on the response body.
+- **Do not route `normaliseTimestamps` either.** Same reason as `migrateToV2`
+  below: it rewrites `Ledger.client_ts` and `Balance_Snapshot.last_txn_ts`
+  cells, and nothing that rewrites ledger cells may be reachable from an
+  unauthenticated GET on an `ANYONE_ANONYMOUS` deployment. It is idempotent and
+  information-preserving (a parseable ISO string becomes a Date carrying the
+  same instant; anything else is left alone and counted), so it is safe to run
+  twice — but it is run by hand from the Apps Script editor, once, to convert
+  the rows written before the Dubai-time change.
 - **Do not route `migrateToV2`.** It clears `Ledger`, `Balance_Snapshot` and
   `Rejections`. `action=setup` is an unauthenticated GET on an
   `ANYONE_ANONYMOUS` deployment, so a routed destructive action is a public
@@ -166,7 +185,14 @@ npm run mutate            # breaks load-bearing lines on purpose and checks the
                           #   scripts/mutations.mjs. Do NOT pipe it — the pipe
                           #   eats the exit code and survivors look like a pass.
 npm run mutate -- --list  # what it would test, running nothing
+npm run mutate test/dates.test.mjs   # one suite; the unit ones are seconds
 ```
+
+A `SURVIVED` verdict is almost never a hole in the suite. In order of
+likelihood it is (1) the case's `expect` naming a check that could not catch
+it, (2) a mutation that compiled without changing behaviour, (3) a real gap.
+All three happened on the first full run — see
+`~/.claude/learnings/mutate-the-dangerous-path-not-the-visible-one.md`.
 
 `verify-facilities` seeds warehouses into the throwaway browser profile (never the Sheet)
 and blocks the API, because warehouse data does not exist on any reachable server until S04

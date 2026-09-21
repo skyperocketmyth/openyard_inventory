@@ -149,6 +149,8 @@ async function ensureServer() {
   throw new Error(`nothing is serving docs/ on ${URL_UNDER_TEST} and it could not be started`);
 }
 
+let cdpSeq = 0;
+
 /**
  * Run a suite and return which checks passed and which failed.
  * A non-zero exit is expected — the whole point is that it fails.
@@ -163,8 +165,15 @@ function runSuite(suite) {
   const args = isUnit
     ? ['--test', suite]
     : [`scripts/${suite}.mjs`, URL_UNDER_TEST];
+  // A fresh debugging port per run. All the browser suites hardcoded one, and
+  // running the same suite a dozen times back to back meant a Chrome that had
+  // not finished releasing it stopped the next one from starting. That reports
+  // as CRASH, which reads as a hole in the suite and is nothing of the kind —
+  // two cases flipped between CAUGHT and CRASH across runs because of it.
+  const env = isUnit ? process.env
+    : { ...process.env, CDP_PORT: String(9400 + (cdpSeq++ % 80)) };
   return new Promise(resolve => {
-    const p = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
     let out = '';
     p.stdout.on('data', d => { out += d; });
     p.stderr.on('data', d => { out += d; });
@@ -237,7 +246,14 @@ try {
         if (r.ran === 0) {
           // The suite could not complete. That IS detection, but no named
           // check owns it, so it is reported separately rather than as a pass.
-          outcome = { verdict: 'CRASH', detail: 'the suite could not run to completion' };
+          outcome = {
+            verdict: 'CRASH',
+            detail: 'the suite could not run to completion',
+            // The last few lines of its output, because "it crashed" on its own
+            // is indistinguishable from a real finding and sends you reading
+            // the wrong code.
+            tail: r.out.trim().split('\n').slice(-4).map(l => l.trim()).filter(Boolean)
+          };
         } else {
           const stillGreen = c.expect.filter(label =>
             !r.failed.some(f => f.includes(label)));
@@ -262,7 +278,9 @@ try {
       survived++;
       console.log(`  ${red('CRASH   ')} ${c.name}`);
       console.log(dim(`            ${outcome.detail} — detected, but no named check owns it.`));
-      console.log(dim('            Give the suite a check that fails cleanly here.'));
+      for (const line of outcome.tail || []) console.log(dim(`            > ${line}`));
+      console.log(dim('            If that looks like a harness failure rather than the mutation,'));
+      console.log(dim('            re-run this one suite on its own before believing it.'));
     } else if (v === 'STALE') {
       survived++;
       console.log(`  ${red('STALE   ')} ${c.name}`);
@@ -285,8 +303,14 @@ try {
   const caught = results.filter(r => r.outcome.verdict === 'CAUGHT').length;
   console.log(`\n${bold('Result')}  ${caught}/${cases.length} mutations caught by the check that should catch them\n`);
   if (survived) {
-    console.log(red('Every SURVIVED / CRASH / STALE line above is a hole in the suite,'));
-    console.log(red('not a problem with the code. The mutation was deliberate.\n'));
+    console.log(red('Nothing above is a bug in the code — every mutation was deliberate.'));
+    console.log(red('A SURVIVED line means one of three things, in this order of likelihood:'));
+    console.log(dim('  1. the `expect` names the wrong check, and a DIFFERENT one caught it'));
+    console.log(dim('     (look for the "something else did notice" line)'));
+    console.log(dim('  2. the mutation compiled but changed no behaviour — prove it is real'));
+    console.log(dim('     by hand before hunting for a hole in the suite'));
+    console.log(dim('  3. the suite genuinely cannot see it, and needs a new check'));
+    console.log('');
   }
   finish(survived ? 1 : 0);
 } catch (err) {
