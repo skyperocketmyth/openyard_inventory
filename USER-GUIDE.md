@@ -107,9 +107,28 @@ good to damaged.
 
 ## 6b. Fixing a mistake — the Activity tab
 
-Open **Activity**. Every movement is there, newest at the top, across every
-warehouse and every item. Anything still waiting to upload sits above the rest
-with a ⟳ next to it.
+Open **Activity**. It opens on **today's** movements, newest at the top, across
+every warehouse and every item. Anything still waiting to upload sits above the
+rest with a ⟳ next to it.
+
+### Choosing how far back to look
+
+Five buttons across the top: **Today**, **Yesterday**, **Last 7 days**,
+**Last 30 days**, **All time**. It always starts on Today — leave the tab and
+come back and it resets, so you never end up staring at an old filter and
+thinking the yard is empty.
+
+The line underneath always tells you which one you are looking at, so a short
+list can never be mistaken for a quiet day.
+
+Two things worth knowing:
+
+- **Yesterday means yesterday only** — that one calendar day, not "since
+  yesterday". Use Last 7 days if you want a run of days.
+- **An entry belongs to the day it was RECORDED, not the day it uploaded.** If
+  someone books a truck in at 11pm with no signal and the phone uploads it at
+  8am, it stays under Yesterday, where it actually happened. That is what keeps
+  a day's figures matching the paperwork.
 
 Two buttons sit under each entry:
 
@@ -145,6 +164,23 @@ Recording stock works with no signal at all. Cancelling and correcting do not �
 they need a connection, because the correction has to be agreed with the Sheet
 before it counts. If you are out of range it will tell you, and nothing is lost:
 try again when you have a bar.
+
+---
+
+## 6c. Dates and times
+
+Everywhere in the app, and in every date column of the Google Sheet, a date and
+time now reads:
+
+```
+21-09-2026 09:05:20     (day-month-year, then the time to the second)
+```
+
+Always **Dubai time**, whatever the phone's own clock is set to. The app used to
+say things like "Today 09:05" or "Yest 23:40" using the handset's timezone —
+which meant a phone set wrongly could put a movement on the wrong day, and two
+entries a minute apart looked identical with no way to match them to a row in
+the Sheet.
 
 ---
 

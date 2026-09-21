@@ -97,27 +97,66 @@ const run = async expression => {
  */
 const STUB = `
 window.__posts = [];
+window.__gets = [];
 window.__voidMode = 'ok';
+
+/*
+ * Dubai midnight, worked out HERE with a hardcoded +4 rather than by importing
+ * lib/dates.js. That is deliberate: a test that borrows the implementation's
+ * own idea of "today" agrees with it whether or not either is right. Dubai has
+ * no DST, so +4 is exact, and this stays an independent second opinion.
+ */
+const DUBAI_OFFSET = 4 * 3600 * 1000;
+const DAY = 24 * 3600 * 1000;
+const NOW = Date.now();
+const TODAY_START = Math.floor((NOW + DUBAI_OFFSET) / DAY) * DAY - DUBAI_OFFSET;
+const iso = ms => new Date(ms).toISOString();
+window.__todayStart = iso(TODAY_START);
+window.__yestStart = iso(TODAY_START - DAY);
+
+// The four rows the cancel/correct checks above rely on are all dated TODAY,
+// so the default window shows them and those checks are unaffected. The three
+// after them exist only to be filtered OUT.
+const T_MORNING = TODAY_START + 9 * 3600 * 1000;      // 09:00 today, Dubai
+window.__todayStampIso = iso(T_MORNING);
 const LEDGER = [
   { txnId:'OY-VOID9', type:'VOID', facility:'YARD A', toFacility:'', sku:'CEM-50',
     qty:7, damagedQty:0, condition:'', refNo:'', vehicleNo:'', location:'',
     remarks:'Cancelled OY-GONE1', recordedBy:'Harish',
-    clientTs:'2026-09-20T10:00:00.000Z', serverTs:'2026-09-20T10:00:00.000Z',
+    clientTs:iso(T_MORNING + 180000), serverTs:iso(T_MORNING + 180000),
     voidOf:'OY-GONE1', voidOfType:'INBOUND' },
   { txnId:'OY-GONE1', type:'INBOUND', facility:'YARD A', toFacility:'', sku:'CEM-50',
     qty:7, damagedQty:0, condition:'', refNo:'GRN-7', vehicleNo:'', location:'',
     remarks:'', recordedBy:'Harish',
-    clientTs:'2026-09-20T09:00:00.000Z', serverTs:'2026-09-20T09:00:00.000Z',
+    clientTs:iso(T_MORNING + 120000), serverTs:iso(T_MORNING + 120000),
     voidOf:'', voidOfType:'' },
   { txnId:'OY-ISSUE1', type:'OUTBOUND', facility:'YARD A', toFacility:'', sku:'STEEL-10',
     qty:30, damagedQty:0, condition:'GOOD', refNo:'DO-55', vehicleNo:'DXB1234',
     location:'', remarks:'to site', recordedBy:'Harish',
-    clientTs:'2026-09-20T08:00:00.000Z', serverTs:'2026-09-20T08:00:00.000Z',
+    clientTs:iso(T_MORNING + 60000), serverTs:iso(T_MORNING + 60000),
     voidOf:'', voidOfType:'' },
   { txnId:'OY-RECV1', type:'INBOUND', facility:'YARD A', toFacility:'', sku:'STEEL-10',
     qty:70, damagedQty:5, condition:'', refNo:'GRN-1', vehicleNo:'', location:'',
     remarks:'', recordedBy:'Harish',
-    clientTs:'2026-09-20T07:00:00.000Z', serverTs:'2026-09-20T07:00:00.000Z',
+    clientTs:iso(T_MORNING), serverTs:iso(T_MORNING),
+    voidOf:'', voidOfType:'' },
+  // Recorded 23:00 LAST NIGHT, uploaded 08:00 THIS MORNING. It belongs to
+  // yesterday, and filtering on arrival instead of on when it happened would
+  // put it in today's list.
+  { txnId:'OY-LATE', type:'INBOUND', facility:'YARD A', toFacility:'', sku:'STEEL-10',
+    qty:12, damagedQty:0, condition:'', refNo:'GRN-LATE', vehicleNo:'', location:'',
+    remarks:'night shift', recordedBy:'Harish',
+    clientTs:iso(TODAY_START - 3600000), serverTs:iso(TODAY_START + 8 * 3600000),
+    voidOf:'', voidOfType:'' },
+  { txnId:'OY-WEEK', type:'INBOUND', facility:'YARD A', toFacility:'', sku:'STEEL-10',
+    qty:13, damagedQty:0, condition:'', refNo:'GRN-WEEK', vehicleNo:'', location:'',
+    remarks:'', recordedBy:'Harish',
+    clientTs:iso(TODAY_START - 3 * DAY), serverTs:iso(TODAY_START - 3 * DAY),
+    voidOf:'', voidOfType:'' },
+  { txnId:'OY-ANCIENT', type:'INBOUND', facility:'YARD A', toFacility:'', sku:'STEEL-10',
+    qty:14, damagedQty:0, condition:'', refNo:'GRN-OLD', vehicleNo:'', location:'',
+    remarks:'', recordedBy:'Harish',
+    clientTs:iso(TODAY_START - 40 * DAY), serverTs:iso(TODAY_START - 40 * DAY),
     voidOf:'', voidOfType:'' }
 ];
 const META = { epoch:9, itemsEpoch:3, facilitiesEpoch:2, schemaVersion:2,
@@ -150,7 +189,20 @@ window.fetch = async (input, init) => {
     }
     return jsonRes({ ok:true, data:{ results:[] }, meta:META });
   }
-  if (action === 'getLedger') return jsonRes({ ok:true, data:{ sku:'', facility:'', rows:LEDGER }, meta:META });
+  if (action === 'getLedger') {
+    const q = new URL(url, location.href).searchParams;
+    const since = q.get('since') || '';
+    const until = q.get('until') || '';
+    window.__gets.push({ action, since, until });
+    // Filtered on clientTs — when the movement happened — mirroring the server.
+    const rows = LEDGER.filter(r => {
+      const ms = Date.parse(r.clientTs);
+      if (since && ms < Date.parse(since)) return false;
+      if (until && ms >= Date.parse(until)) return false;
+      return true;
+    });
+    return jsonRes({ ok:true, data:{ sku:'', facility:'', since, until, rows, more:false }, meta:META });
+  }
   if (action === 'bootstrap') {
     return jsonRes({ ok:true, data:{
       users:['Harish'],
@@ -454,7 +506,129 @@ try {
   ok('with no connection, cancelling says so instead of failing silently',
     /connection/i.test(offlineToast), `toast: "${offlineToast}"`);
 
-  /* ---- 11. nothing threw the whole way through ---- */
+  /* ---- 11. the date window ---- */
+  await run(`window.__voidMode = 'ok'`);
+  await run(`document.querySelector('.tab[data-screen="balance"]').click()`);
+  await sleep(800);
+  await run(`window.__gets.length = 0`);
+  await run(`document.querySelector('.tab[data-screen="activity"]').click()`);
+  await sleep(1800);
+
+  const dflt = await run(`(() => {
+    const chips = [...document.querySelectorAll('#actRanges [data-range]')];
+    return {
+      labels: chips.map(c => c.textContent.trim()),
+      pressed: chips.filter(c => c.getAttribute('aria-pressed') === 'true')
+        .map(c => c.dataset.range),
+      sent: window.__gets[window.__gets.length - 1] || null,
+      todayStart: window.__todayStart,
+      txns: [...document.querySelectorAll('#actList .mv-row')].map(r => r.dataset.txn || ''),
+      count: document.getElementById('actCount').textContent
+    };
+  })()`);
+
+  ok('the window chips are the five asked for, in order',
+    dflt.labels.join('|') === 'Today|Yesterday|Last 7 days|Last 30 days|All time',
+    dflt.labels.join('|'));
+  ok('the tab opens on Today', dflt.pressed.join(',') === 'today', dflt.pressed.join(','));
+  ok('and only ONE chip is ever pressed', dflt.pressed.length === 1);
+  ok('opening it asks the server only for today',
+    dflt.sent && dflt.sent.since === dflt.todayStart && dflt.sent.until === '',
+    JSON.stringify(dflt.sent) + ' vs since=' + dflt.todayStart);
+  ok('the count line names the window so a short list cannot be mistaken for an empty yard',
+    /Today/.test(dflt.count), dflt.count);
+
+  // The one that matters: OY-LATE arrived this morning but happened last night.
+  ok('an entry uploaded today but recorded last night is NOT in Today',
+    !dflt.txns.includes('OY-LATE'), dflt.txns.join(','));
+  ok('older movements are filtered out too',
+    !dflt.txns.includes('OY-WEEK') && !dflt.txns.includes('OY-ANCIENT'),
+    dflt.txns.join(','));
+  ok("today's own movements are all still there",
+    ['OY-VOID9', 'OY-GONE1', 'OY-ISSUE1', 'OY-RECV1'].every(t => dflt.txns.includes(t)),
+    dflt.txns.join(','));
+
+  const pick = async key => {
+    await run(`document.querySelector('#actRanges [data-range="${key}"]').click()`);
+    await sleep(1600);
+    return run(`(() => ({
+      sent: window.__gets[window.__gets.length - 1] || null,
+      txns: [...document.querySelectorAll('#actList .mv-row')].map(r => r.dataset.txn || ''),
+      pressed: [...document.querySelectorAll('#actRanges [data-range]')]
+        .filter(c => c.getAttribute('aria-pressed') === 'true').map(c => c.dataset.range),
+      count: document.getElementById('actCount').textContent
+    }))()`);
+  };
+
+  const yest = await pick('yesterday');
+  ok('Yesterday sends BOTH bounds, so it cannot also mean today',
+    yest.sent && yest.sent.since && yest.sent.until,
+    JSON.stringify(yest.sent));
+  ok('Yesterday is exactly one day wide',
+    yest.sent && Date.parse(yest.sent.until) - Date.parse(yest.sent.since) === 86400000,
+    JSON.stringify(yest.sent));
+  ok('and it DOES show the entry that was recorded last night',
+    yest.txns.includes('OY-LATE'), yest.txns.join(','));
+  ok("...while today's entries drop out of it",
+    !yest.txns.includes('OY-RECV1'), yest.txns.join(','));
+  ok('the pressed chip follows the choice', yest.pressed.join(',') === 'yesterday');
+
+  const week = await pick('week');
+  ok('Last 7 days reaches back past yesterday',
+    week.txns.includes('OY-WEEK') && week.txns.includes('OY-RECV1'), week.txns.join(','));
+  ok('but still not 40 days', !week.txns.includes('OY-ANCIENT'), week.txns.join(','));
+
+  const all = await pick('all');
+  ok('All time sends no bounds at all',
+    all.sent && !all.sent.since && !all.sent.until, JSON.stringify(all.sent));
+  const allServer = all.txns.filter(Boolean);
+  ok('and shows everything, including the oldest row',
+    allServer.includes('OY-ANCIENT') && allServer.length === 7,
+    `server rows: ${allServer.join(',')}`);
+
+  // Re-entering from the tab bar must start again at Today. A filter left on
+  // "Yesterday" from a previous visit reads as an empty yard.
+  await run(`document.querySelector('.tab[data-screen="balance"]').click()`);
+  await sleep(800);
+  await run(`document.querySelector('.tab[data-screen="activity"]').click()`);
+  await sleep(1600);
+  const reopened = await run(`[...document.querySelectorAll('#actRanges [data-range]')]
+    .filter(c => c.getAttribute('aria-pressed') === 'true').map(c => c.dataset.range).join(',')`);
+  ok('leaving and returning resets the window to Today', reopened === 'today', reopened);
+
+  /* ---- 12. timestamps read DD-MM-YYYY HH:MM:SS in Dubai time ---- */
+  const stamp = await run(`(() => {
+    const row = document.querySelector('#actList .mv-row[data-txn="OY-RECV1"]');
+    const text = row ? row.querySelector('.when').textContent : '';
+    // the pattern match happens in Node, on the raw text -- see below
+    // Independent expectation: format the same instant with Intl, pinned to
+    // Dubai, rather than asking the app what it thinks the answer is.
+    const d = new Date(window.__todayStampIso);
+    const p = {};
+    for (const part of new Intl.DateTimeFormat('en-GB', { timeZone:'Asia/Dubai',
+        year:'numeric', month:'2-digit', day:'2-digit',
+        hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23' })
+        .formatToParts(d)) if (part.type !== 'literal') p[part.type] = part.value;
+    return {
+      want: p.day + '-' + p.month + '-' + p.year + ' ' + p.hour + ':' + p.minute + ':' + p.second,
+      raw: text,
+      utcHour: String(d.getUTCHours()).padStart(2, '0')
+    };
+  })()`);
+  const STAMP_RE = /\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}/;
+  stamp.shown = (String(stamp.raw).match(STAMP_RE) || [''])[0];
+  ok('a timestamp is shown as DD-MM-YYYY HH:MM:SS', !!stamp.shown, stamp.raw);
+  ok('and it is the Dubai time, to the second', stamp.shown === stamp.want,
+    `shown ${stamp.shown}, expected ${stamp.want}`);
+  // `stamp.shown &&` is load-bearing. Without it an empty `shown` — which is
+  // exactly what a broken extraction produces — compares unequal to the UTC
+  // hour and this passes while testing nothing. It did, for two runs.
+  ok('it is NOT the UTC hour — the four-hour shift is really applied',
+    !!stamp.shown && stamp.shown.slice(11, 13) !== stamp.utcHour,
+    `shown hour "${stamp.shown.slice(11, 13)}", UTC hour ${stamp.utcHour}`);
+  ok('the old relative wording is gone', !/Today |Yest /.test(stamp.raw), stamp.raw);
+
+  /* ---- 13. nothing threw the whole way through ---- */
   const thrown = events.filter(e => e.method === 'Runtime.exceptionThrown');
   ok('nothing threw while driving all of the above', thrown.length === 0,
     thrown.map(e => e.params?.exceptionDetails?.exception?.description || '?').join(' | '));

@@ -560,6 +560,9 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
   server. A cancellation writes a reversing row; it never erases anything.
 -->
 <section class="screen" id="scr-activity">
+  <!-- Built from RANGES in lib/dates.js rather than written out here, so the
+       chips and the window arithmetic cannot drift apart. -->
+  <div class="sorts" id="actRanges"></div>
   <div class="eyebrow" id="actCount" style="margin-bottom:var(--s-2)"></div>
   <div id="actList"></div>
 </section>
@@ -592,12 +595,13 @@ textarea.field-input{height:auto;min-height:var(--tap-lg);padding:var(--s-3) var
 import { configure, apiPost, ApiError, probe } from './lib/api.js';
 import { prefs, cacheMeta } from './lib/idb.js';
 import { normSku, normFacility } from './lib/deltas.js';
+import { fmtDubai, windowFor, RANGES, DEFAULT_RANGE } from './lib/dates.js';
 import * as OB from './lib/outbox.js';
 import * as SY from './lib/sync.js';
 
 /* ================= configuration ================= */
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby_s3R6Kn2YaLNFM4CmuP9QZCTNiqcdBOonFrigrAdOFhV4XNHrMIRWlApTtzS2fMYn/exec';
-window.OY_APP_VERSION = '1.2.0';
+window.OY_APP_VERSION = '1.3.0';
 configure(SCRIPT_URL);
 
 const $ = id => document.getElementById(id);
@@ -620,6 +624,10 @@ const ui = {
   // asked to correct: `{ txnId, screen }`. Cleared by show(), so leaving the
   // form by ANY route abandons the correction with nothing written.
   correcting: null,
+  // The Activity window. Reset to Today on every visit rather than remembered:
+  // the tab exists to answer "what happened today", and a filter silently left
+  // on "Yesterday" from last week would look like an empty yard.
+  actRange: DEFAULT_RANGE,
   usersLoaded: false,      // distinguishes "no names" from "not loaded yet"
   sheetStack: []
 };
@@ -829,17 +837,26 @@ function stockBar(total, damaged) {
   return `<div class="stockbar"><div class="dmg" style="width:${pct}%"></div></div>`;
 }
 
+/**
+ * Every timestamp the app shows goes through here, and nothing else formats a
+ * date anywhere in this file — that is what keeps the six call sites reading
+ * the same way as each other and as the Sheet.
+ *
+ * It used to say "Today 09:05" / "Yest 23:40" / "15 Sep 08:00", computed from
+ * the DEVICE's clock and timezone. Two problems with that, and the second is
+ * the reason it went:
+ *
+ *  - No seconds and no year, so two entries a minute apart looked identical
+ *    and nothing on screen could be matched against a row in the Sheet.
+ *  - "Today" and "Yest" were the device's idea of the day. A handset on the
+ *    wrong timezone relabelled which DAY a movement belonged to, silently, and
+ *    the app would then disagree with the Sheet about it.
+ *
+ * Now it is one absolute form, pinned to Dubai: DD-MM-YYYY HH:MM:SS, matching
+ * the number format on every date column in the book.
+ */
 function when(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d)) return '';
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  const t = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  if (sameDay) return `Today ${t}`;
-  const y = new Date(today); y.setDate(y.getDate() - 1);
-  if (d.toDateString() === y.toDateString()) return `Yest ${t}`;
-  return `${d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} ${t}`;
+  return fmtDubai(iso);
 }
 
 /* ================= sheets ================= */
@@ -973,7 +990,13 @@ for (const t of document.querySelectorAll('.tab')) {
   // NOT cleared: several trucks of the same SKU arrive in a row, and that
   // convenience costs nothing because the item is named on screen in large
   // type, while a yard once chosen is easy to stop reading.
-  t.onclick = () => show(t.dataset.screen);
+  t.onclick = () => {
+    // Tapping the tab is the "start again" gesture, so Activity reopens on
+    // Today. Re-rendering from inside the screen (after a cancellation, say)
+    // keeps whatever window the user had chosen.
+    if (t.dataset.screen === 'activity') ui.actRange = DEFAULT_RANGE;
+    show(t.dataset.screen);
+  };
 }
 
 /* ================= render dispatcher ================= */
@@ -1768,15 +1791,52 @@ function voidErrorText(err) {
   return (err && err.message) || 'Could not cancel that entry.';
 }
 
+/**
+ * The window chips. Rebuilt on every render so the pressed state can never
+ * disagree with `ui.actRange` — cheap, five buttons, and it removes a whole
+ * class of "the list changed but the chip didn't" bug.
+ */
+function paintRangeChips() {
+  const bar = $('actRanges');
+  if (!bar) return;
+  bar.innerHTML = RANGES.map(r => `<button class="chip-filter" data-range="${r.key}"
+      aria-pressed="${String(r.key === ui.actRange)}">${esc(r.label)}</button>`).join('');
+  for (const c of bar.querySelectorAll('[data-range]')) {
+    c.onclick = () => {
+      ui.actRange = c.dataset.range;
+      // renderActivity directly, not render(): the dispatcher would also
+      // repaint the sync banner and re-read balances for no reason here.
+      renderActivity();
+    };
+  }
+}
+
 async function renderActivity() {
   const list = $('actList');
   const count = $('actCount');
   if (!list) return;
+  paintRangeChips();
+  // Computed on the PHONE, from Dubai midnight, and sent as two instants. The
+  // server has no timezone opinion to get wrong that way — it just compares
+  // two moments — and the yard's day is the yard's day regardless of where the
+  // script happens to think it is running.
+  const win = windowFor(ui.actRange);
 
   // Queued entries first: they are the newest thing that happened, and the
   // ones the user is most likely looking for. They carry no actions — there
   // is nothing on the server yet to cancel.
-  const queued = await OB.pendingItems();
+  // Queued entries are filtered by the SAME window as everything else, on the
+  // same field (when the movement happened), or the list would quietly mean
+  // two different things above and below the fold. The count line still
+  // reports the full outstanding total so nothing unsent can hide.
+  const allQueued = await OB.pendingItems();
+  const queued = allQueued.filter(it => {
+    const ms = Date.parse(String(it.clientTs || ''));
+    if (isNaN(ms)) return true;   // unstamped: show it rather than lose it
+    if (win.since && ms < Date.parse(win.since)) return false;
+    if (win.until && ms >= Date.parse(win.until)) return false;
+    return true;
+  });
   const queuedHtml = queued.slice().reverse().map(it => {
     const t = String(it.type || '').toUpperCase();
     const route = t === 'TRANSFER'
@@ -1792,13 +1852,18 @@ async function renderActivity() {
 
   let serverHtml = '';
   let shown = 0;
+  let truncated = false;
   try {
     const { apiGet } = await import('./lib/api.js');
     // No sku and no facility = every movement, newest first. 500 is the
     // server's hard cap; 200 keeps the list quick to scroll on a phone.
-    const res = await apiGet('getLedger', { limit: '200' });
+    const params = { limit: '200' };
+    if (win.since) params.since = win.since;
+    if (win.until) params.until = win.until;
+    const res = await apiGet('getLedger', params);
     const rows = (res.data && res.data.rows) || [];
     shown = rows.length;
+    truncated = !!(res.data && res.data.more);
 
     // An entry is cancelled when some OTHER row names it in `voidOf`.
     const cancelled = new Set();
@@ -1833,16 +1898,25 @@ async function renderActivity() {
           <span class="q">${n(r.qty)}</span>
           ${isCancelled ? '<span class="mv-tag">CANCELLED</span>' : ''}
         </div>${acts}</div>`;
-    }).join('') : '<p style="color:var(--muted);font-size:var(--fs-sm)">No movements recorded yet.</p>';
+    }).join('') : `<p style="color:var(--muted);font-size:var(--fs-sm)">
+        Nothing recorded ${esc(ui.actRange === 'all' ? 'yet' : win.label.toLowerCase())}.</p>`;
   } catch {
     serverHtml = '<p style="color:var(--muted);font-size:var(--fs-sm)">'
       + 'Uploaded movements need a connection. Anything still waiting to upload is listed above.</p>';
   }
 
   list.innerHTML = queuedHtml + serverHtml;
-  count.textContent = shown
-    ? `${shown} movement${shown === 1 ? '' : 's'}${queued.length ? ` · ${queued.length} waiting to upload` : ''}`
-    : (queued.length ? `${queued.length} waiting to upload` : '');
+  // The window is always named. Without it a short list is indistinguishable
+  // from a filter someone left on by accident. `allQueued`, not `queued`, for
+  // the waiting count: an entry that has not uploaded has to be reported even
+  // when it falls outside the window being viewed.
+  const bits = [];
+  bits.push(shown
+    ? `${shown}${truncated ? '+' : ''} movement${shown === 1 ? '' : 's'} · ${win.label}`
+    : win.label);
+  if (allQueued.length) bits.push(`${allQueued.length} waiting to upload`);
+  if (truncated) bits.push('showing the latest 200');
+  count.textContent = bits.join(' · ');
 
   for (const b of list.querySelectorAll('[data-cancel]')) {
     b.onclick = () => askCancel(b.dataset.cancel);

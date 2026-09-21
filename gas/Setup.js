@@ -100,6 +100,71 @@ function ensureTabs_() {
     formatted.push(tName + '!' + col);
   }
 
+  /* ---- every date column, rendered DD-MM-YYYY HH:MM:SS in Dubai time ----
+   *
+   * TWO THINGS ARE REQUIRED and only one of them is the format. A number
+   * format decides the LAYOUT of an instant; the SPREADSHEET's timezone
+   * decides which wall clock that instant is laid out against. Set the format
+   * alone and a movement recorded at 09:05 in the yard still reads 05:05 on a
+   * UTC-configured book — a plausible time, wrong by four hours, and nothing
+   * anywhere says so. The timezone is set just below for that reason.
+   *
+   * A format also only ever affects a real Date. Two of these columns used to
+   * hold ISO strings and were changed to Dates for exactly this (see
+   * `sheetTs_`): a string ignores the format completely and would have sat
+   * there in raw UTC text looking like a bug in the format.
+   *
+   * Same header-position guard as the text columns above, and for the same
+   * reason: on an un-migrated book these indexes point at other people's data.
+   */
+  var dateCols = [
+    [T_LEDGER, LX.client_ts + 1, 'client_ts'], [T_LEDGER, LX.server_ts + 1, 'server_ts'],
+    [T_ITEMS, IX.created_ts + 1, 'created_ts'], [T_ITEMS, IX.updated_ts + 1, 'updated_ts'],
+    [T_USERS, UX.added_ts + 1, 'added_ts'],
+    [T_SNAP, SX.last_txn_ts + 1, 'last_txn_ts'], [T_SNAP, SX.updated_ts + 1, 'updated_ts'],
+    [T_REJ, RX.server_ts + 1, 'server_ts'],
+    [T_FAC, FX.created_ts + 1, 'created_ts']
+  ];
+  var DATE_FMT = 'dd-mm-yyyy hh:mm:ss';
+  var datesFormatted = [];
+  var datesSkipped = [];
+  for (var dc = 0; dc < dateCols.length; dc++) {
+    var dTab = dateCols[dc][0];
+    var dCol = dateCols[dc][1];
+    var dWant = dateCols[dc][2];
+    var sh3 = book.getSheetByName(dTab);
+    if (!sh3) continue;
+    if (!Object.prototype.hasOwnProperty.call(headerRows, dTab)) {
+      var dWide = sh3.getLastColumn();
+      headerRows[dTab] = dWide >= 1 ? sh3.getRange(1, 1, 1, dWide).getValues()[0] : [];
+    }
+    var dCell = headerRows[dTab][dCol - 1];
+    var dAt = String(dCell === undefined || dCell === null ? '' : dCell).trim().toLowerCase();
+    if (dAt !== dWant) {
+      datesSkipped.push(dTab + '!' + dCol + ' expected "' + dWant + '", found "' + dAt + '"');
+      continue;
+    }
+    sh3.getRange(2, dCol, Math.max(sh3.getMaxRows() - 1, 1), 1).setNumberFormat(DATE_FMT);
+    datesFormatted.push(dTab + '!' + dCol);
+  }
+
+  // The spreadsheet's own timezone, which is NOT the same setting as the
+  // manifest's `timeZone` (that one only governs what `new Date()` means to
+  // the script). Wrapped because it is the one call here that can fail on a
+  // book someone else owns, and a formatting nicety must never be what stops
+  // `setup` repairing a header row.
+  var tz = null;
+  try {
+    if (typeof book.getSpreadsheetTimeZone === 'function'
+        && book.getSpreadsheetTimeZone() !== 'Asia/Dubai') {
+      book.setSpreadsheetTimeZone('Asia/Dubai');
+    }
+    tz = typeof book.getSpreadsheetTimeZone === 'function'
+      ? book.getSpreadsheetTimeZone() : 'unknown';
+  } catch (tzErr) {
+    tz = 'could not set: ' + String(tzErr && tzErr.message || tzErr);
+  }
+
   // Meta defaults — only written when absent, so a live epoch is never reset.
   var meta = metaAll_();
   var defaults = {
@@ -136,6 +201,9 @@ function ensureTabs_() {
     headersWritten: headed,
     textFormatted: formatted,
     textSkipped: skipped,
+    datesFormatted: datesFormatted,
+    datesSkipped: datesSkipped,
+    timeZone: tz,
     metaSeeded: seeded,
     allTabs: book.getSheets().map(function (s) { return s.getName(); })
   };

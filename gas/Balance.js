@@ -267,7 +267,13 @@ function applySnapshotDeltas_(deltaMap, snap) {
       // snapshotMap_ records `row` as a 1-based Sheet row starting at 2, and
       // `grid` is that same range — so the offset is always row - 2.
       var gi = cur.row - 2;
-      grid[gi] = [d.facility, d.sku, total, damaged, total - damaged, od, ts, now];
+      // sheetTs_(ts) in the CELL, plain `ts` everywhere else. The comparison
+      // three lines up is a lexicographic `>` on ISO text and must keep its
+      // strings; the cell needs a real Date or the Dubai column format has
+      // nothing to render. snapshotMap_ converts it back to ISO on read, so
+      // the round trip leaves the comparison untouched.
+      grid[gi] = [d.facility, d.sku, total, damaged, total - damaged, od,
+        sheetTs_(ts), now];
       if (lo === -1 || gi < lo) lo = gi;
       if (gi > hi) hi = gi;
       cur.total = total;
@@ -276,7 +282,7 @@ function applySnapshotDeltas_(deltaMap, snap) {
       cur.openingDone = od;
     } else {
       appends.push([d.facility, d.sku, d.total, d.damaged, d.total - d.damaged,
-        !!d.openingSet, d.lastTxnTs || '', now]);
+        !!d.openingSet, sheetTs_(d.lastTxnTs || ''), now]);
       snap[k] = {
         facility: d.facility,
         sku: d.sku,
@@ -370,7 +376,7 @@ function rebuildSnapshot_() {
     for (var j = 0; j < keys.length; j++) {
       var b = folded[keys[j]];
       out.push([b.facility, b.sku, b.total, b.damaged, b.total - b.damaged,
-        !!openingAt[keys[j]], b.lastTxnTs || '', now]);
+        !!openingAt[keys[j]], sheetTs_(b.lastTxnTs || ''), now]);
     }
     if (out.length) {
       sh.getRange(2, 1, out.length, H_SNAP.length).setValues(out);

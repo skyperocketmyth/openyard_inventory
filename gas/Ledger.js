@@ -213,7 +213,11 @@ function submitTxnBatch_(body) {
         type === 'TRANSFER' ? toFacility : '',
         sku, num_(t.qty), num_(t.damagedQty), str_(t.condition),
         str_(t.refNo), normVehicle_(t.vehicleNo), str_(t.location), remarks,
-        str_(t.recordedBy), cts, now, deviceId, appVersion,
+        // sheetTs_(cts), not cts: a Sheets number format only renders a real
+        // Date, so an ISO STRING here cannot be shown in Dubai time no matter
+        // what format the column carries. `cts` itself stays a string for the
+        // lastTxnTs comparison above, which relies on ISO text sorting.
+        str_(t.recordedBy), sheetTs_(cts), now, deviceId, appVersion,
         // Always blank from this path, never echoed from the request. A batch
         // cannot carry a VOID any more, so these two are meaningless here —
         // and echoing them was quietly exploitable: voidTxn_ decides
@@ -937,7 +941,10 @@ function voidTxn_(body) {
       newId, idem, 'VOID', facility, toFacility, sku, qty, dmg, cond,
       str_(orig[LX.ref_no]), normVehicle_(orig[LX.vehicle_no]), str_(orig[LX.location]),
       'Cancelled ' + txnId + (reason ? ': ' + reason : ''),
-      by, nowIso, now, str_(body.deviceId), str_(body.appVersion),
+      // `now` twice, not nowIso then now: same instant, but a Date renders in
+      // Dubai time under the column format and a string does not. nowIso is
+      // still what goes into the snapshot delta, where text ordering matters.
+      by, now, now, str_(body.deviceId), str_(body.appVersion),
       txnId, origType
     ]]);
 

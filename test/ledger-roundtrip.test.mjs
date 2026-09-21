@@ -251,7 +251,14 @@ test('every field of a receipt survives the write: the RAW row matches its heade
   assert.equal(cell(row, 'location'), 'BAY 7');
   assert.equal(cell(row, 'remarks'), 'unloaded at the north gate');
   assert.equal(cell(row, 'recorded_by'), 'Harish');
-  assert.equal(cell(row, 'client_ts'), '2026-09-07T06:15:00.000Z', 'the PHONE\'s time, kept verbatim');
+  // A real Date now, not the ISO string it used to be: a Sheets number format
+  // can only render a Date, and the yard wants Dubai time in the book. The
+  // INSTANT must still be the phone's, to the millisecond — asserting the type
+  // alone would pass against code that quietly stamped SERVER time here and
+  // lost when the movement actually happened out in the yard.
+  assert.ok(isDate(cell(row, 'client_ts')), 'client_ts must be a real Date for the Sheet to format');
+  assert.equal(cell(row, 'client_ts').toISOString(), '2026-09-07T06:15:00.000Z',
+    "the PHONE's time, kept verbatim");
   assert.ok(isDate(cell(row, 'server_ts')), 'server_ts must be the server\'s own clock');
   assert.equal(cell(row, 'device_id'), 'dev_abc123');
   assert.equal(cell(row, 'app_version'), '1.2.3');
@@ -383,7 +390,11 @@ test('the VOID row voidTxn_ writes is a SECOND 20-slot literal, and it lines up 
   assert.equal(cell(row, 'location'), 'BAY 2', 'copied forward from the original');
   assert.match(String(cell(row, 'remarks')), /Cancelled OY-TRF1.*wrong yard/);
   assert.equal(cell(row, 'recorded_by'), 'Harish');
-  assert.match(String(cell(row, 'client_ts')), /^\d{4}-\d{2}-\d{2}T/);
+  // Same change as the receipt row above. A cancellation happens at the moment
+  // the server records it, so its client_ts must be that same instant.
+  assert.ok(isDate(cell(row, 'client_ts')), 'client_ts must be a real Date');
+  assert.equal(cell(row, 'client_ts').getTime(), cell(row, 'server_ts').getTime(),
+    'a cancellation happens at the moment the server records it');
   assert.ok(isDate(cell(row, 'server_ts')), 'server_ts must be the server\'s own clock');
   assert.equal(cell(row, 'device_id'), 'dev_abc123');
   assert.equal(cell(row, 'app_version'), '1.2.3');

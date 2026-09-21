@@ -10,7 +10,7 @@ docs/            the app — GitHub Pages serves this folder (own origin)
   index.html     every screen, one file, no build step
                  (Balance · Receive · Issue · Activity · Items)
   sw.js          service worker — BUMP `CACHE` on every change to docs/
-  lib/*.js       ES modules: deltas, idb, api, outbox, sync
+  lib/*.js       ES modules: deltas, dates, idb, api, outbox, sync
         |
         |  fetch(), Content-Type: text/plain
         v
@@ -78,6 +78,27 @@ on the right total. `OPENING` is enforced once-per-SKU for the same reason.
   "All warehouses" stock view is view-only and offers no action buttons at all,
   which is what makes this structural rather than a check to remember. See
   `uiFacility` in `docs/index.html` and PLAN finding F10.
+- **Do not format a date anywhere but `docs/lib/dates.js`.** Every timestamp
+  the app shows goes through `when()`, which is now a one-line delegate to
+  `fmtDubai`, and every column that holds one in the Sheet carries
+  `dd-mm-yyyy hh:mm:ss` applied by `ensureTabs_`. Both are pinned to
+  `Asia/Dubai`, never to the device or to the script's own locale — a handset on
+  the wrong timezone otherwise relabels which DAY a movement belongs to, which
+  does not throw and does not look wrong.
+- **Do not assume a Sheets number format will render an ISO string.** It only
+  renders a real Date, which is why `client_ts` and `last_txn_ts` are written
+  through `sheetTs_`. Their in-memory forms stay ISO STRINGS, because
+  `lastTxnTs` is compared with a lexicographic `>` in three places
+  (`gas/Ledger.js`, `gas/Balance.js` twice) that depend on ISO text ordering.
+  `snapshotMap_` converts back on read, so the round trip is safe — keep it
+  that way.
+- **Do not filter the Activity window on `server_ts`.** The window is compared
+  against `client_ts`, when the movement HAPPENED. An entry recorded at 23:00
+  and uploaded at 08:00 belongs to yesterday; filtering on arrival silently
+  moves it into today and the yard's day totals stop matching the paperwork.
+  `server_ts` is used only to decide where `ledgerRowsSince_` may stop reading,
+  which is safe because append order is `server_ts` order and
+  `client_ts <= server_ts`.
 - **Do not send a correction's cancellation before the replacement is saved.**
   `askCorrect` only prefills the form; `commitCorrection`, called from the
   Receive/Issue submit handlers, is what sends the `voidTxn` — and it returns
@@ -136,7 +157,15 @@ npm run serve             # docs/ on http://127.0.0.1:8787/  (leave running)
 node scripts/verify-mobile.mjs     http://127.0.0.1:8787/   # 18 layout checks
 node scripts/verify-flows.mjs      http://127.0.0.1:8787/   # 8 interaction checks
 node scripts/verify-facilities.mjs http://127.0.0.1:8787/   # 34 warehouse-UI checks
-node scripts/verify-activity.mjs   http://127.0.0.1:8787/   # 41 Activity/cancel/correct checks
+node scripts/verify-activity.mjs   http://127.0.0.1:8787/   # 63 Activity/cancel/correct/window checks
+```
+
+```
+npm run mutate            # breaks load-bearing lines on purpose and checks the
+                          #   browser suites actually go red. Cases live in
+                          #   scripts/mutations.mjs. Do NOT pipe it — the pipe
+                          #   eats the exit code and survivors look like a pass.
+npm run mutate -- --list  # what it would test, running nothing
 ```
 
 `verify-facilities` seeds warehouses into the throwaway browser profile (never the Sheet)

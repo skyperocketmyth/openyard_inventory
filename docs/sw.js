@@ -4,7 +4,7 @@
  * BUMP `CACHE` ON EVERY CHANGE to index.html or lib/*.js. Forgetting this is the
  * number one cause of "why is my phone still showing the old version".
  */
-const CACHE = 'oy-inventory-v13';
+const CACHE = 'oy-inventory-v14';
 
 const SHELL = [
   './',
@@ -13,6 +13,7 @@ const SHELL = [
   './icon-192.png',
   './icon-512.png',
   './lib/deltas.js',
+  './lib/dates.js',
   './lib/idb.js',
   './lib/api.js',
   './lib/outbox.js',

@@ -88,6 +88,10 @@ var FX = hIx_(H_FAC);
 var IX = hIx_(H_ITEMS);
 var UX = hIx_(H_USERS);
 var MX = hIx_(H_META);
+// Rejections is written positionally and never read back, so this map exists
+// only so `ensureTabs_` can find its server_ts column by NAME rather than by a
+// hardcoded 1 — the same rule as every other column in this project.
+var RX = hIx_(H_REJ);
 
 var UOMS = ['PCS', 'KG', 'MT', 'BAG', 'BUNDLE', 'CBM', 'ROLL', 'LTR'];
 var MAX_BATCH = 25;
@@ -199,7 +203,8 @@ function route_(action, p, body) {
     case 'getItems':      return jsonOk_(getItemsRead_(p.sinceEpoch));
     case 'getFacilities': return jsonOk_(getFacilitiesRead_(p.sinceEpoch));
     case 'getUsers':      return jsonOk_({ names: readUsers_() });
-    case 'getLedger':     return jsonOk_(getLedgerRead_(p.sku, p.limit, p.facility));
+    case 'getLedger':     return jsonOk_(getLedgerRead_(p.sku, p.limit, p.facility,
+                                                       p.since, p.until));
 
     /* writes */
     case 'submitTxnBatch': return submitTxnBatch_(body);
@@ -430,6 +435,43 @@ function headerMatches_(name, header) {
     }
   }
   return true;
+}
+
+/**
+ * A stored timestamp as milliseconds, whatever type the cell holds.
+ *
+ * Ledger cells are a mix by history: `server_ts` has always been a real Date,
+ * `client_ts` was an ISO string until the Dubai-format change and is a Date
+ * for every row written after it. Both shapes are in the book at once and
+ * always will be, so every comparison has to go through here.
+ *
+ * Returns null for blank or unparseable, never NaN — a caller testing
+ * `ms < cutoff` must not have NaN silently answer false.
+ */
+function tsMs_(v) {
+  if (v instanceof Date) {
+    var t = v.getTime();
+    return isNaN(t) ? null : t;
+  }
+  var s = str_(v);
+  if (!s) return null;
+  var p = Date.parse(s);
+  return isNaN(p) ? null : p;
+}
+
+/**
+ * The form a timestamp should be WRITTEN into a cell as: a real Date, so the
+ * Sheet's `dd-mm-yyyy hh:mm:ss` number format can render it in Dubai time.
+ * A number format does nothing to a string, which is why `client_ts` had to
+ * stop being one.
+ *
+ * Anything unparseable is handed back untouched. A blank stays blank, and a
+ * device that sent something strange still gets its value recorded verbatim
+ * rather than becoming an Invalid Date in the book.
+ */
+function sheetTs_(v) {
+  var ms = tsMs_(v);
+  return ms === null ? v : new Date(ms);
 }
 
 function newTxnId_() {
@@ -713,15 +755,88 @@ function balanceRowOrder_(a, b) {
   return a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0;
 }
 
-function getLedgerRead_(sku, limit, facility) {
+/**
+ * The Ledger rows that could possibly fall inside a window, read from the END
+ * of the tab backwards in blocks.
+ *
+ * This is the only part of the date filter that makes anything FASTER. Adding
+ * a `since` to the scan loop alone would still have read the whole tab into
+ * memory first, which is what `rows_` does, so "today" would have cost exactly
+ * what "all time" costs.
+ *
+ * THE INVARIANT THAT MAKES STOPPING EARLY SAFE. Rows are only ever appended,
+ * and every append stamps `server_ts` with the server's own clock, so row
+ * order IS `server_ts` order. And `client_ts` is when a phone recorded the
+ * movement, which is necessarily at or before the moment the server received
+ * it. So once a block's oldest `server_ts` is before the cutoff, every row
+ * above it has an earlier `server_ts` AND therefore an earlier `client_ts`:
+ * nothing up there can be in the window, and the read can stop.
+ *
+ * The one case that breaks the invariant is a phone with a badly-set clock
+ * sending a `client_ts` in the future. Such a row would be skipped by an
+ * early stop — and showing it under "today" would be wrong anyway, because it
+ * was uploaded weeks ago. Out of the window is the honest answer.
+ *
+ * A block whose oldest `server_ts` is blank or unparseable does NOT stop the
+ * read; it keeps going rather than risk truncating on one bad cell.
+ */
+function ledgerRowsSince_(sinceMs) {
+  var sh = tab_(T_LEDGER);
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  var width = sh.getLastColumn();
+  if (sinceMs === null) return sh.getRange(2, 1, last - 1, width).getValues();
+
+  var BLOCK = 400;
+  var out = [];
+  var end = last;
+  while (end >= 2) {
+    var start = Math.max(2, end - BLOCK + 1);
+    var block = sh.getRange(start, 1, end - start + 1, width).getValues();
+    out = block.concat(out);
+    var oldest = tsMs_(block[0][LX.server_ts]);
+    if (oldest !== null && oldest < sinceMs) break;
+    end = start - 1;
+  }
+  return out;
+}
+
+/**
+ * @param {string} since  ISO instant; rows recorded before it are excluded.
+ * @param {string} until  ISO instant; rows recorded at or after it are excluded.
+ *
+ * The window is compared against `client_ts` — WHEN THE MOVEMENT HAPPENED in
+ * the yard, which is what the app shows and what a supervisor means by
+ * "today". An entry typed offline at 08:00 and uploaded at 17:00 belongs to
+ * 08:00. `server_ts` is only used to decide where the read can stop.
+ *
+ * Both bounds are instants computed by the CLIENT from Dubai midnight, not
+ * dates interpreted here. The phone knows the yard's timezone; the server just
+ * compares two moments, and so has no timezone opinion to get wrong.
+ */
+function getLedgerRead_(sku, limit, facility, since, until) {
   assertSchemaOrThrow_();
   var want = normSku_(sku);
   var wantFac = normFacility_(facility);
   var cap = Math.min(Math.max(Number(limit) || 50, 1), 500);
-  var vals = rows_(T_LEDGER);
+  var sinceMs = tsMs_(since);
+  var untilMs = tsMs_(until);
+  var vals = ledgerRowsSince_(sinceMs);
   var out = [];
-  for (var i = vals.length - 1; i >= 0 && out.length < cap; i--) {
+  var more = false;
+  for (var i = vals.length - 1; i >= 0; i--) {
     var r = vals[i];
+    // Same invariant as ledgerRowsSince_, applied per row: past the cutoff by
+    // append time means every remaining row is too.
+    if (sinceMs !== null) {
+      var sMs = tsMs_(r[LX.server_ts]);
+      if (sMs !== null && sMs < sinceMs) break;
+    }
+    if (out.length >= cap) { more = true; break; }
+    var whenMs = tsMs_(r[LX.client_ts]);
+    if (whenMs === null) whenMs = tsMs_(r[LX.server_ts]);
+    if (sinceMs !== null && (whenMs === null || whenMs < sinceMs)) continue;
+    if (untilMs !== null && (whenMs === null || whenMs >= untilMs)) continue;
     if (want && normSku_(r[LX.sku]) !== want) continue;
     // Either end matches: a transfer is history at the yard it left AND at the
     // yard it arrived at, and a supervisor looking at one of them must see it.
@@ -749,5 +864,8 @@ function getLedgerRead_(sku, limit, facility) {
       voidOfType: str_(r[LX.void_of_type])
     });
   }
-  return { sku: want, facility: wantFac, rows: out };
+  // `more` lets the app say "showing the latest 200" instead of quietly
+  // presenting a truncated list as the whole history.
+  return { sku: want, facility: wantFac, since: str_(since), until: str_(until),
+    rows: out, more: more };
 }
